@@ -1,6 +1,6 @@
 {
   "name": "@ddgll/ts-crdt",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A modern, event-driven CRDT library for building real-time collaborative applications.",
   "author": "ddgll",
   "license": "MIT",
