@@ -30,7 +30,7 @@ jobs:
         run: pnpm --filter @ddgll/ts-crdt build
 
       - name: Publish to npm
-        run: pnpm --filter @ddgll/ts-crdt publish --no-git-checks
+        run: pnpm --filter @ddgll/ts-crdt publish --no-git-checks --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
