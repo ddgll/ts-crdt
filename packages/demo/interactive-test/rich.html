@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CRDT Rich Text Interactive Test</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        display: flex;
+        gap: 2rem;
+        padding: 2rem;
+      }
+      .ProseMirror {
+        border: 1px solid #ccc;
+        padding: 1rem;
+        min-height: 300px;
+        width: 400px;
+      }
+      #toolbar button.is-active {
+        background-color: black;
+        color: white;
+      }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <a href="/index.html">Simple Textarea Demo</a>
+    </nav>
+    <div>
+      <h2>User 1</h2>
+      <div id="toolbar">
+        <button id="bold">Bold</button>
+        <button id="italic">Italic</button>
+        <button id="strike">Strike</button>
+        <button id="h1">H1</button>
+        <button id="h2">H2</button>
+        <button id="p">P</button>
+        <button id="bulletList">Bullet List</button>
+        <button id="orderedList">Ordered List</button>
+      </div>
+      <div id="editor"></div>
+    </div>
+    <script type="module" src="rich.js"></script>
+  </body>
+</html>
