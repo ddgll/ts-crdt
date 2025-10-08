@@ -47,7 +47,6 @@ ws.onerror = (error) => {
   textarea.disabled = true;
 };
 
-let previousText = "";
 function updateTextarea() {
   const content = doc.getMap().getArray("content");
   if (content) {
@@ -56,10 +55,8 @@ function updateTextarea() {
     if (textarea.value !== text) {
       textarea.value = text;
     }
-    previousText = text;
   } else {
     textarea.value = "";
-    previousText = "";
   }
 }
 
@@ -69,7 +66,11 @@ textarea.addEventListener("input", () => {
   }
 
   const newText = textarea.value;
-  const oldText = previousText;
+  const oldText = (doc.getMap().getArray("content")?.toJSON() ?? []).join("");
+
+  if (newText === oldText) {
+    return;
+  }
 
   let start = 0;
   while (
@@ -106,6 +107,4 @@ textarea.addEventListener("input", () => {
       ws.send(JSON.stringify(event));
     }
   }
-
-  previousText = newText;
 });
