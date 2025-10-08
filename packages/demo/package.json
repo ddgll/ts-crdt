@@ -1,0 +1,30 @@
+{
+  "name": "@ddgll/ts-crdt-demo",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm run build:server && pnpm run build:rich && pnpm run build:index && node dist/server.js",
+    "build:server": "esbuild server/server.ts --bundle --platform=node --outfile=dist/server.js --format=esm --external:drizzle-orm --external:@libsql/client --external:hono --external:@hono/node-server --external:@hono/node-ws --external:@ddgll/ts-crdt",
+    "build:rich": "esbuild interactive-test/rich.ts --bundle --outfile=interactive-test/rich.js --format=esm",
+    "build:index": "esbuild interactive-test/main.ts --bundle --outfile=interactive-test/main.js --format=esm",
+    "e2e": "playwright test --config=./e2e/playwright.config.ts"
+  },
+  "dependencies": {
+    "@ddgll/ts-crdt": "workspace:^",
+    "@hono/node-ws": "^1.2.0",
+    "@libsql/client": "^0.15.15",
+    "@tiptap/core": "^3.6.2",
+    "@tiptap/starter-kit": "^3.6.2",
+    "@types/ws": "^8.18.1",
+    "drizzle-orm": "^0.44.5",
+    "hono": "^4.9.9",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@hono/node-server": "^1.19.5",
+    "@playwright/test": "^1.55.1",
+    "drizzle-kit": "^0.31.5",
+    "esbuild": "^0.25.10"
+  }
+}

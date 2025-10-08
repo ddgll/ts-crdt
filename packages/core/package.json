@@ -1,0 +1,44 @@
+{
+  "name": "@ddgll/ts-crdt",
+  "version": "1.0.0",
+  "description": "A modern, event-driven CRDT library for building real-time collaborative applications.",
+  "author": "ddgll",
+  "license": "ISC",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "licenses": [
+    {
+      "type": "MIT",
+      "url": "https://opensource.org/license/mit/"
+    }
+  ],
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ddgll/@ddgll/ts-crdt.git"
+  },
+  "homepage": "https://github.com/ddgll/@ddgll/ts-crdt#readme",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest --run",
+    "lint": "eslint . --ignore-pattern coverage --ignore-pattern dist",
+    "type-check": "tsc --noEmit",
+    "prepublishOnly": "pnpm run build"
+  },
+  "keywords": [
+    "crdt",
+    "collaboration",
+    "real-time",
+    "offline-first",
+    "distributed"
+  ]
+}
