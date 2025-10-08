@@ -7,6 +7,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     if: github.actor == 'ddgll' || github.repository_owner == github.actor
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -31,3 +33,18 @@ jobs:
         run: pnpm --filter @ddgll/ts-crdt publish --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Extract package version
+        id: package_version
+        run: echo "version=$(node -p "require('./packages/core/package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.package_version.outputs.version }}
+          name: Release ${{ steps.package_version.outputs.version }}
+          body: "Release of version ${{ steps.package_version.outputs.version }}"
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
