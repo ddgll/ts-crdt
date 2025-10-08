@@ -1,18 +1,12 @@
 {
   "name": "@ddgll/ts-crdt",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "A modern, event-driven CRDT library for building real-time collaborative applications.",
   "author": "ddgll",
-  "license": "ISC",
+  "license": "MIT",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "type": "module",
-  "licenses": [
-    {
-      "type": "MIT",
-      "url": "https://opensource.org/license/mit/"
-    }
-  ],
   "files": [
     "dist"
   ],

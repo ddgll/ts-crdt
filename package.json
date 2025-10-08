@@ -1,7 +1,6 @@
 {
   "name": "@ddgll/ts-crdt-monorepo",
-  "private": true,
-  "version": "1.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "build": "pnpm -r --filter=./packages/core run build",
@@ -13,7 +12,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "packageManager": "pnpm@10.17.1",
   "devDependencies": {
     "@eslint/js": "^9.36.0",
