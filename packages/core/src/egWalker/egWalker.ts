@@ -122,8 +122,19 @@ export class EgWalker {
 				this.sequenceNumber = eventSequenceNumber + 1;
 			}
 		}
+
+		const currentHeads = new Set(this.graph.getVersion());
+		const isDirectSuccessor =
+			event.parents.length === currentHeads.size &&
+			event.parents.every((p) => currentHeads.has(p));
+
 		this.graph.addEvent(event);
-		this.applyNewEvent(event);
+
+		if (isDirectSuccessor) {
+			this.applyNewEvent(event);
+		} else {
+			this.rebuildStateAtVersion(this.graph.getVersion());
+		}
 	}
 
 	/**

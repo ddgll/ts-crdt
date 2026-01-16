@@ -182,6 +182,7 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 export function createEventGraph(freezed = true) {
 	const events = new Map<EventID, CrdtEvent>();
 	const eventToCRDTMap = new Map<EventID, EventID>();
+	const children = new Map<EventID, Set<EventID>>();
 
 	/**
 	 * Adds a new event to the graph after validating it.
@@ -224,6 +225,12 @@ export function createEventGraph(freezed = true) {
 			throw new EventGraphError('Invalid circular dependency');
 		}
 		events.set(event.id, event);
+		for (const parentId of event.parents) {
+			if (!children.has(parentId)) {
+				children.set(parentId, new Set());
+			}
+			children.get(parentId)!.add(event.id);
+		}
 	}
 
 	/**
@@ -376,19 +383,20 @@ export function createEventGraph(freezed = true) {
 	 */
 	function happenedBefore(a: CrdtEvent, b: CrdtEvent): boolean {
 		if (a.id === b.id) return true;
-		const stack = [a];
+		const stack = [a.id];
 		const visited = new Set<EventID>();
 
 		while (stack.length > 0) {
-			const current = stack.pop()!;
-			if (visited.has(current.id)) continue;
-			visited.add(current.id);
+			const currentId = stack.pop()!;
+			if (visited.has(currentId)) continue;
+			visited.add(currentId);
 
-			if (current.id === b.id) return true;
+			if (currentId === b.id) return true;
 
-			for (const e of events.values()) {
-				if (e.parents.includes(current.id)) {
-					stack.push(e);
+			const kids = children.get(currentId);
+			if (kids) {
+				for (const kidId of kids) {
+					stack.push(kidId);
 				}
 			}
 		}
