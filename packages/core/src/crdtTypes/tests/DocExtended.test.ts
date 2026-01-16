@@ -15,8 +15,9 @@ describe("Doc extended coverage", () => {
             },
         };
 
-        doc.applyUpdate(update);
-
+        expect(() => doc.applyUpdate(update)).toThrow(
+            "Unsupported update type: not-set"
+        );
         expect(walkerSpy).not.toHaveBeenCalled();
     });
 

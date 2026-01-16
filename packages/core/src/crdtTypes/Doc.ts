@@ -63,6 +63,8 @@ export class Doc {
 				key: update.payload.key,
 				value: update.payload.value,
 			});
+		} else {
+			throw new Error(`Unsupported update type: ${update.payload.type}`);
 		}
 	}
 

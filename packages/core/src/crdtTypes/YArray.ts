@@ -3,7 +3,6 @@ import { YMap } from './YMap.js';
 import {
 	ARRAY_DELETE_OP,
 	ARRAY_INSERT_OP,
-	ARRAY_REPLACE_OP,
 } from '../eventGraph/eventGraph.js';
 
 /**
@@ -25,6 +24,13 @@ export class YArray {
 		this._doc = doc;
 		this._path = path;
 		this._data = [];
+	}
+
+	/**
+	 * Gets the number of elements in the array.
+	 */
+	get length(): number {
+		return this._data.length;
 	}
 
 	/**
@@ -57,15 +63,12 @@ export class YArray {
 
 	/**
 	 * Replaces the entire content of the array with new values.
+	 * This method performs a delete of all existing elements followed by an insert of the new values.
 	 * @param values The new elements for the array.
-	 * @returns The generated event.
 	 */
 	replace(values: unknown[]) {
-		return this._doc.egWalker.localOp({
-			type: ARRAY_REPLACE_OP,
-			path: this._path,
-			values,
-		});
+		this.delete(0, this.length);
+		this.insert(0, values);
 	}
 
 	/**
