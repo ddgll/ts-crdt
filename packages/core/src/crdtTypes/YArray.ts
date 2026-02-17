@@ -1,9 +1,10 @@
-import type { Doc } from './Doc.js';
-import { YMap } from './YMap.js';
+import type { Doc } from "./Doc.js";
+import { YMap } from "./YMap.js";
 import {
 	ARRAY_DELETE_OP,
 	ARRAY_INSERT_OP,
-} from '../eventGraph/eventGraph.js';
+	ARRAY_REPLACE_OP,
+} from "../eventGraph/eventGraph.js";
 
 /**
  * A collaborative array that can be modified by multiple replicas.
@@ -63,12 +64,15 @@ export class YArray {
 
 	/**
 	 * Replaces the entire content of the array with new values.
-	 * This method performs a delete of all existing elements followed by an insert of the new values.
+	 * This is an atomic operation that generates a single ARRAY_REPLACE_OP event.
 	 * @param values The new elements for the array.
 	 */
 	replace(values: unknown[]) {
-		this.delete(0, this.length);
-		this.insert(0, values);
+		this._doc.egWalker.localOp({
+			type: ARRAY_REPLACE_OP,
+			path: this._path,
+			values,
+		});
 	}
 
 	/**
@@ -116,9 +120,9 @@ export class YArray {
 	toJSON(): unknown[] {
 		return this._data.map((item) => {
 			if (item instanceof YMap) {
-				return { crdtType: 'YMap', data: item.toJSON() };
+				return { crdtType: "YMap", data: item.toJSON() };
 			} else if (item instanceof YArray) {
-				return { crdtType: 'YArray', data: item.toJSON() };
+				return { crdtType: "YArray", data: item.toJSON() };
 			}
 			return item;
 		});
@@ -142,23 +146,27 @@ export class YArray {
 			const itemPath = [...path, i];
 			if (
 				itemData &&
-				typeof itemData === 'object' &&
-				'crdtType' in itemData &&
-				'data' in itemData
+				typeof itemData === "object" &&
+				"crdtType" in itemData &&
+				"data" in itemData
 			) {
 				const { crdtType, data } = itemData as {
 					crdtType: string;
 					data: unknown;
 				};
 				switch (crdtType) {
-					case 'YMap':
+					case "YMap":
 						return YMap.fromJSON(
 							doc,
 							itemPath,
 							data as Record<string, unknown>,
 						);
-					case 'YArray':
-						return YArray.fromJSON(doc, itemPath, data as unknown[]);
+					case "YArray":
+						return YArray.fromJSON(
+							doc,
+							itemPath,
+							data as unknown[],
+						);
 				}
 			}
 			return itemData;

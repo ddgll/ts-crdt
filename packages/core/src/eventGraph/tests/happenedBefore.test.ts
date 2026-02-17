@@ -1,9 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { createEventGraph, MAP_SET_OP, CrdtEvent } from "../eventGraph.js";
+import { describe, expect, it } from "vitest";
+import { CrdtEvent, createEventGraph, MAP_SET_OP } from "../eventGraph.js";
 
 describe("happenedBefore", () => {
   it("should return true if a is a direct parent of b", () => {
-    const eventGraph = createEventGraph(false);
+    const eventGraph = createEventGraph();
     const eventA: CrdtEvent = {
       id: "A:1",
       replicaId: "A",
@@ -22,7 +22,7 @@ describe("happenedBefore", () => {
   });
 
   it("should return true if a is an indirect parent of b", () => {
-    const eventGraph = createEventGraph(false);
+    const eventGraph = createEventGraph();
     const eventA: CrdtEvent = {
       id: "A:1",
       replicaId: "A",
@@ -48,7 +48,7 @@ describe("happenedBefore", () => {
   });
 
   it("should return false if a is not a parent of b", () => {
-    const eventGraph = createEventGraph(false);
+    const eventGraph = createEventGraph();
     const eventA: CrdtEvent = {
       id: "A:1",
       replicaId: "A",
@@ -67,7 +67,7 @@ describe("happenedBefore", () => {
   });
 
   it("should return true for the same event", () => {
-    const eventGraph = createEventGraph(false);
+    const eventGraph = createEventGraph();
     const eventA: CrdtEvent = {
       id: "A:1",
       replicaId: "A",
@@ -79,7 +79,7 @@ describe("happenedBefore", () => {
   });
 
   it("should handle complex graphs with redundant paths", () => {
-    const eventGraph = createEventGraph(false);
+    const eventGraph = createEventGraph();
     const eventA: CrdtEvent = {
       id: "A:1",
       replicaId: "A",

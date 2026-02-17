@@ -1,7 +1,7 @@
-import { YArray } from './YArray.js';
-import { YText } from './YText.js';
-import type { Doc } from './Doc.js';
-import { CrdtEvent, MAP_SET_OP } from '../eventGraph/eventGraph.js';
+import { YArray } from "./YArray.js";
+import { YText } from "./YText.js";
+import type { Doc } from "./Doc.js";
+import { CrdtEvent, MAP_SET_OP } from "../eventGraph/eventGraph.js";
 
 /**
  * A collaborative map that can be modified by multiple replicas.
@@ -71,6 +71,8 @@ export class YMap {
 	/**
 	 * Gets a nested YMap associated with a key.
 	 * If the key does not exist or holds a different type, a new YMap is created and set.
+	 * No event is generated for the container creation — operations on the created
+	 * container will cause it to be created on remote replicas via path traversal.
 	 * @param key The key of the nested map.
 	 * @returns The nested YMap instance.
 	 */
@@ -78,11 +80,11 @@ export class YMap {
 		const map = this._map.get(key);
 		if (map === undefined) {
 			const newMap = new YMap(this._doc, [...this._path, key]);
-			this.set(key, newMap);
+			this._set(key, newMap);
 			return newMap;
 		}
 		if (!(map instanceof YMap)) {
-			throw new Error('Type mismatch: expected YMap');
+			throw new Error("Type mismatch: expected YMap");
 		}
 		return map;
 	}
@@ -90,6 +92,8 @@ export class YMap {
 	/**
 	 * Gets a nested YArray associated with a key.
 	 * If the key does not exist or holds a different type, a new YArray is created and set.
+	 * No event is generated for the container creation — operations on the created
+	 * container will cause it to be created on remote replicas via path traversal.
 	 * @param key The key of the nested array.
 	 * @returns The nested YArray instance.
 	 */
@@ -97,11 +101,11 @@ export class YMap {
 		const array = this._map.get(key);
 		if (array === undefined) {
 			const newArray = new YArray(this._doc, [...this._path, key]);
-			this.set(key, newArray);
+			this._set(key, newArray);
 			return newArray;
 		}
 		if (!(array instanceof YArray)) {
-			throw new Error('Type mismatch: expected YArray');
+			throw new Error("Type mismatch: expected YArray");
 		}
 		return array;
 	}
@@ -109,6 +113,8 @@ export class YMap {
 	/**
 	 * Gets a nested YText associated with a key.
 	 * If the key does not exist or holds a different type, a new YText is created and set.
+	 * No event is generated for the container creation — operations on the created
+	 * container will cause it to be created on remote replicas via path traversal.
 	 * @param key The key of the nested text.
 	 * @returns The nested YText instance.
 	 */
@@ -116,11 +122,11 @@ export class YMap {
 		const text = this._map.get(key);
 		if (text === undefined) {
 			const newText = new YText(this._doc, [...this._path, key]);
-			this.set(key, newText);
+			this._set(key, newText);
 			return newText;
 		}
 		if (!(text instanceof YText)) {
-			throw new Error('Type mismatch: expected YText');
+			throw new Error("Type mismatch: expected YText");
 		}
 		return text;
 	}
@@ -133,11 +139,11 @@ export class YMap {
 		const obj: { [key: string]: unknown } = {};
 		for (const [key, value] of this._map.entries()) {
 			if (value instanceof YMap) {
-				obj[key] = { crdtType: 'YMap', data: value.toJSON() };
+				obj[key] = { crdtType: "YMap", data: value.toJSON() };
 			} else if (value instanceof YArray) {
-				obj[key] = { crdtType: 'YArray', data: value.toJSON() };
+				obj[key] = { crdtType: "YArray", data: value.toJSON() };
 			} else if (value instanceof YText) {
-				obj[key] = { crdtType: 'YText', data: value.toString() };
+				obj[key] = { crdtType: "YText", data: value.toString() };
 			} else {
 				obj[key] = value;
 			}
@@ -180,9 +186,9 @@ export class YMap {
 			const value = json[key] as
 				| { crdtType: string; data: Record<string, unknown> }
 				| Record<string, unknown>;
-			if (value && typeof value === 'object' && value.crdtType) {
+			if (value && typeof value === "object" && value.crdtType) {
 				switch (value.crdtType) {
-					case 'YMap':
+					case "YMap":
 						map._applySet(
 							key,
 							YMap.fromJSON(
@@ -192,16 +198,24 @@ export class YMap {
 							),
 						);
 						break;
-					case 'YArray':
+					case "YArray":
 						map._applySet(
 							key,
-							YArray.fromJSON(doc, [...path, key], value.data as unknown[]),
+							YArray.fromJSON(
+								doc,
+								[...path, key],
+								value.data as unknown[],
+							),
 						);
 						break;
-					case 'YText':
+					case "YText":
 						map._applySet(
 							key,
-							YText.fromString(doc, [...path, key], value.data as string),
+							YText.fromString(
+								doc,
+								[...path, key],
+								value.data as string,
+							),
 						);
 						break;
 				}
