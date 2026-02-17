@@ -4,17 +4,19 @@ type ReplicaID = string;
 export type EventID = string;
 
 /** Constant for map set operations. */
-export const MAP_SET_OP = 'map-set';
+export const MAP_SET_OP = "map-set";
 /** Constant for array insert operations. */
-export const ARRAY_INSERT_OP = 'array-insert';
+export const ARRAY_INSERT_OP = "array-insert";
 /** Constant for array delete operations. */
-export const ARRAY_DELETE_OP = 'array-delete';
+export const ARRAY_DELETE_OP = "array-delete";
 /** Constant for array replace operations. */
-export const ARRAY_REPLACE_OP = 'array-replace';
+export const ARRAY_REPLACE_OP = "array-replace";
 /** Constant for text insert operations. */
-export const TEXT_INSERT_OP = 'text-insert';
+export const TEXT_INSERT_OP = "text-insert";
 /** Constant for text format operations. */
-export const TEXT_FORMAT_OP = 'text-format';
+export const TEXT_FORMAT_OP = "text-format";
+/** Constant for text delete operations. */
+export const TEXT_DELETE_OP = "text-delete";
 
 /** Represents an operation to set a key-value pair in a map. */
 export interface MapSetOperation {
@@ -82,6 +84,17 @@ export interface TextFormatOperation {
 	attributes: Record<string, unknown>;
 }
 
+/** Represents an operation to delete text from a YText object. */
+export interface TextDeleteOperation {
+	type: typeof TEXT_DELETE_OP;
+	/** The path to the target text object within the document. */
+	path: (string | number)[];
+	/** The index at which to start deleting. */
+	index: number;
+	/** The number of characters to delete. */
+	length: number;
+}
+
 /** A union of all possible operation types. */
 export type Op =
 	| MapSetOperation
@@ -89,7 +102,8 @@ export type Op =
 	| ArrayDeleteOperation
 	| ArrayReplaceOperation
 	| TextInsertOperation
-	| TextFormatOperation;
+	| TextFormatOperation
+	| TextDeleteOperation;
 
 /**
  * Represents a single event in the CRDT's history.
@@ -110,7 +124,7 @@ export interface CrdtEvent {
 export class EventGraphError extends Error {
 	constructor(message: string) {
 		super(message);
-		this.name = 'EventGraphError';
+		this.name = "EventGraphError";
 	}
 }
 
@@ -120,52 +134,99 @@ export class EventGraphError extends Error {
  * @returns True if the value is a CrdtEvent, false otherwise.
  */
 export function isCrdtEvent(event: unknown): event is CrdtEvent {
-	if (typeof event !== 'object' || event === null) {
+	if (typeof event !== "object" || event === null) {
 		return false;
 	}
 	const e = event as Record<string, unknown>;
-	if (typeof e.id !== 'string') return false;
-	if (typeof e.replicaId !== 'string') return false;
+	if (typeof e.id !== "string") return false;
+	if (typeof e.replicaId !== "string") return false;
 	if (!Array.isArray(e.parents)) return false;
-	if (!e.parents.every((p: unknown) => typeof p === 'string')) return false;
-	if (typeof e.op !== 'object' || e.op === null) return false;
+	if (!e.parents.every((p: unknown) => typeof p === "string")) return false;
+	if (typeof e.op !== "object" || e.op === null) return false;
 	const op = e.op as Record<string, unknown>;
 	switch (op.type) {
 		case MAP_SET_OP:
-			if (typeof (op as unknown as MapSetOperation).key !== 'string')
+			if (typeof (op as unknown as MapSetOperation).key !== "string") {
 				return false;
+			}
 			break;
 		case ARRAY_INSERT_OP:
-			if (typeof (op as unknown as ArrayInsertOperation).index !== 'number')
+			if (
+				typeof (op as unknown as ArrayInsertOperation).index !==
+					"number"
+			) {
 				return false;
-			if (!Array.isArray((op as unknown as ArrayInsertOperation).values))
+			}
+			if (
+				!Array.isArray((op as unknown as ArrayInsertOperation).values)
+			) {
 				return false;
+			}
 			break;
 		case ARRAY_DELETE_OP:
-			if (typeof (op as unknown as ArrayDeleteOperation).index !== 'number')
+			if (
+				typeof (op as unknown as ArrayDeleteOperation).index !==
+					"number"
+			) {
 				return false;
-			if (typeof (op as unknown as ArrayDeleteOperation).length !== 'number')
+			}
+			if (
+				typeof (op as unknown as ArrayDeleteOperation).length !==
+					"number"
+			) {
 				return false;
+			}
 			break;
 		case ARRAY_REPLACE_OP:
-			if (!Array.isArray((op as unknown as ArrayReplaceOperation).values))
+			if (
+				!Array.isArray((op as unknown as ArrayReplaceOperation).values)
+			) {
 				return false;
+			}
 			break;
 		case TEXT_INSERT_OP:
-			if (typeof (op as unknown as TextInsertOperation).index !== 'number')
+			if (
+				typeof (op as unknown as TextInsertOperation).index !== "number"
+			) {
 				return false;
-			if (typeof (op as unknown as TextInsertOperation).text !== 'string')
+			}
+			if (
+				typeof (op as unknown as TextInsertOperation).text !== "string"
+			) {
 				return false;
+			}
 			break;
 		case TEXT_FORMAT_OP:
-			if (typeof (op as unknown as TextFormatOperation).index !== 'number')
-				return false;
-			if (typeof (op as unknown as TextFormatOperation).length !== 'number')
-				return false;
 			if (
-				typeof (op as unknown as TextFormatOperation).attributes !== 'object'
-			)
+				typeof (op as unknown as TextFormatOperation).index !== "number"
+			) {
 				return false;
+			}
+			if (
+				typeof (op as unknown as TextFormatOperation).length !==
+					"number"
+			) {
+				return false;
+			}
+			if (
+				typeof (op as unknown as TextFormatOperation).attributes !==
+					"object"
+			) {
+				return false;
+			}
+			break;
+		case TEXT_DELETE_OP:
+			if (
+				typeof (op as unknown as TextDeleteOperation).index !== "number"
+			) {
+				return false;
+			}
+			if (
+				typeof (op as unknown as TextDeleteOperation).length !==
+					"number"
+			) {
+				return false;
+			}
 			break;
 		default:
 			return false;
@@ -176,13 +237,12 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 /**
  * Creates a new EventGraph instance.
  * The EventGraph is a data structure that stores the history of all operations as a DAG.
- * @param freezed Whether to freeze the internal `events` and `eventToCRDTMap` maps, making them read-only. Defaults to true.
  * @returns An object with methods to interact with the event graph.
  */
-export function createEventGraph(freezed = true) {
+export function createEventGraph() {
 	const events = new Map<EventID, CrdtEvent>();
-	const eventToCRDTMap = new Map<EventID, EventID>();
 	const children = new Map<EventID, Set<EventID>>();
+	const heads = new Set<EventID>();
 
 	/**
 	 * Adds a new event to the graph after validating it.
@@ -195,37 +255,45 @@ export function createEventGraph(freezed = true) {
 			case MAP_SET_OP:
 				break;
 			case ARRAY_INSERT_OP:
-				if (op.index < 0) throw new EventGraphError('Invalid index');
+				if (op.index < 0) throw new EventGraphError("Invalid index");
 				break;
 			case ARRAY_DELETE_OP:
-				if (op.index < 0 || op.length < 0)
-					throw new EventGraphError('Invalid index or length');
+				if (op.index < 0 || op.length < 0) {
+					throw new EventGraphError("Invalid index or length");
+				}
 				break;
 			case ARRAY_REPLACE_OP:
 				break;
 			case TEXT_INSERT_OP:
-				if (op.index < 0) throw new EventGraphError('Invalid index');
+				if (op.index < 0) throw new EventGraphError("Invalid index");
 				break;
 			case TEXT_FORMAT_OP:
-				if (op.index < 0 || op.length < 0)
-					throw new EventGraphError('Invalid index or length');
+				if (op.index < 0 || op.length < 0) {
+					throw new EventGraphError("Invalid index or length");
+				}
+				break;
+			case TEXT_DELETE_OP:
+				if (op.index < 0 || op.length < 0) {
+					throw new EventGraphError("Invalid index or length");
+				}
 				break;
 			default:
-				throw new EventGraphError('Invalid operation type');
+				throw new EventGraphError("Invalid operation type");
+		}
+		if (events.has(event.id)) {
+			return;
 		}
 		const hasMissingParent = event.parents.some((id) => !events.has(id));
 		if (hasMissingParent) {
-			throw new EventGraphError('Invalid parent');
+			throw new EventGraphError("Invalid parent");
 		}
-		// c8 ignore next 4
-		const hasCircularDependency = event.parents.some((id) =>
-			happenedBefore(event, events.get(id)!),
-		);
-		if (hasCircularDependency) {
-			throw new EventGraphError('Invalid circular dependency');
+		if (event.parents.includes(event.id)) {
+			throw new EventGraphError("Event cannot be its own parent");
 		}
 		events.set(event.id, event);
+		heads.add(event.id);
 		for (const parentId of event.parents) {
+			heads.delete(parentId);
 			if (!children.has(parentId)) {
 				children.set(parentId, new Set());
 			}
@@ -247,13 +315,7 @@ export function createEventGraph(freezed = true) {
 	 * @returns An array of event IDs representing the current version.
 	 */
 	function getVersion(): EventID[] {
-		const allIds = new Set(events.keys());
-		for (const event of events.values()) {
-			for (const parentId of event.parents) {
-				allIds.delete(parentId);
-			}
-		}
-		return Array.from(allIds);
+		return Array.from(heads);
 	}
 
 	/**
@@ -298,7 +360,9 @@ export function createEventGraph(freezed = true) {
 			}
 			visited.add(event.id);
 
-			for (const parentId of event.parents) {
+			// Sort parents by ID for deterministic traversal order
+			const sortedParents = [...event.parents].sort();
+			for (const parentId of sortedParents) {
 				const parentEvent = eventMap.get(parentId);
 				if (parentEvent) {
 					visit(parentEvent);
@@ -307,7 +371,12 @@ export function createEventGraph(freezed = true) {
 			sorted.push(event);
 		}
 
-		for (const event of existingEvents) {
+		// Sort events by ID for deterministic iteration — ensures concurrent
+		// events are always applied in the same order across all replicas.
+		const sortedExisting = [...existingEvents].sort((a, b) =>
+			a.id.localeCompare(b.id)
+		);
+		for (const event of sortedExisting) {
 			visit(event);
 		}
 
@@ -322,8 +391,10 @@ export function createEventGraph(freezed = true) {
 	function isCriticalVersion(version: EventID[]): boolean {
 		const currentVersion = getVersion();
 		if (currentVersion.length === 0) return false;
-		if (currentVersion.join() !== version.join()) return false;
-		return true;
+		if (currentVersion.length !== version.length) return false;
+		const sortedCurrent = [...currentVersion].sort();
+		const sortedVersion = [...version].sort();
+		return sortedCurrent.every((id, i) => id === sortedVersion[i]);
 	}
 
 	/**
@@ -370,7 +441,9 @@ export function createEventGraph(freezed = true) {
 		const knownEventIds = new Set(knownEvents.map((e) => e.id));
 
 		const allEvents = Array.from(events.values());
-		const changes = allEvents.filter((event) => !knownEventIds.has(event.id));
+		const changes = allEvents.filter((event) =>
+			!knownEventIds.has(event.id)
+		);
 
 		return changes;
 	}
@@ -413,18 +486,6 @@ export function createEventGraph(freezed = true) {
 		isCriticalVersion,
 		getLastCriticalVersion,
 		happenedBefore,
-		...(freezed
-			? {
-					get events() {
-						return Object.freeze(events);
-					},
-					get eventToCRDTMap() {
-						return Object.freeze(eventToCRDTMap);
-					},
-			  }
-			: {
-					events,
-					eventToCRDTMap,
-			  }),
+		events,
 	};
 }

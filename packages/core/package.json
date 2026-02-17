@@ -1,6 +1,6 @@
 {
   "name": "@ddgll/ts-crdt",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "A modern, event-driven CRDT library for building real-time collaborative applications.",
   "author": "ddgll",
   "license": "MIT",
@@ -18,9 +18,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/ddgll/@ddgll/ts-crdt.git"
+    "url": "https://github.com/ddgll/ts-crdt.git"
   },
-  "homepage": "https://github.com/ddgll/@ddgll/ts-crdt#readme",
+  "homepage": "https://github.com/ddgll/ts-crdt#readme",
   "scripts": {
     "build": "tsc",
     "test": "vitest --run",

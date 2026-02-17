@@ -1,13 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  createEventGraph,
-  EventGraphError,
-  isCrdtEvent,
-  MAP_SET_OP,
   ARRAY_DELETE_OP,
   ARRAY_INSERT_OP,
   ARRAY_REPLACE_OP,
   CrdtEvent,
+  createEventGraph,
+  EventGraphError,
+  isCrdtEvent,
+  MAP_SET_OP,
 } from "../eventGraph.js";
 
 describe("eventGraph", () => {
@@ -25,7 +25,7 @@ describe("eventGraph", () => {
       },
     };
     expect(() => eventGraph.addEvent(event)).toThrow(
-      new EventGraphError("Invalid index or length")
+      new EventGraphError("Invalid index or length"),
     );
   });
 
@@ -41,29 +41,22 @@ describe("eventGraph", () => {
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => eventGraph.addEvent(event as any)).toThrow(
-      new EventGraphError("Invalid operation type")
+      new EventGraphError("Invalid operation type"),
     );
   });
 
-  it("should throw an error for a circular dependency", () => {
-    const eventGraph = createEventGraph(false);
+  it("should throw an error when an event references itself as a parent", () => {
+    const eventGraph = createEventGraph();
     const eventA: CrdtEvent = {
       id: "A:1",
       replicaId: "A",
-      parents: [],
+      parents: ["A:1"], // Self-reference
       op: { type: MAP_SET_OP, path: [], key: "a", value: 1 },
     };
-    eventGraph.addEvent(eventA);
-    const eventB: CrdtEvent = {
-      id: "A:2",
-      replicaId: "A",
-      parents: ["A:1"],
-      op: { type: MAP_SET_OP, path: [], key: "b", value: 2 },
-    };
-    eventGraph.addEvent(eventB);
-    eventA.parents.push("A:2"); // Create circular dependency
+    // Self-referencing parents are caught by the "Invalid parent" check since
+    // the event hasn't been added yet, so its own ID isn't in the graph.
     expect(() => eventGraph.addEvent(eventA)).toThrow(
-      new EventGraphError("Invalid circular dependency")
+      new EventGraphError("Invalid parent"),
     );
   });
 

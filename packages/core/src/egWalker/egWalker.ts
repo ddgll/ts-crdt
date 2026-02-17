@@ -7,13 +7,14 @@ import {
 	EventID,
 	MAP_SET_OP,
 	Op,
+	TEXT_DELETE_OP,
 	TEXT_FORMAT_OP,
 	TEXT_INSERT_OP,
-} from '../eventGraph/eventGraph.js';
-import { Doc } from '../crdtTypes/Doc.js';
-import { YMap } from '../crdtTypes/YMap.js';
-import { YArray } from '../crdtTypes/YArray.js';
-import { YText } from '../crdtTypes/YText.js';
+} from "../eventGraph/eventGraph.js";
+import { Doc } from "../crdtTypes/Doc.js";
+import { YMap } from "../crdtTypes/YMap.js";
+import { YArray } from "../crdtTypes/YArray.js";
+import { YText } from "../crdtTypes/YText.js";
 
 /**
  * Represents a snapshot of the document's state, including the data, event graph, and replica information.
@@ -35,7 +36,7 @@ export interface StateSnapshot {
 export class EgWalkerError extends Error {
 	constructor(message: string) {
 		super(message);
-		this.name = 'EgWalkerError';
+		this.name = "EgWalkerError";
 	}
 }
 
@@ -61,7 +62,8 @@ export class EgWalker {
 	constructor(doc: Doc, replicaId?: string, graph = createEventGraph()) {
 		this.graph = graph;
 		this.doc = doc;
-		this.replicaId = replicaId || Math.random().toString(36).substring(2, 15);
+		this.replicaId = replicaId ||
+			Math.random().toString(36).substring(2, 15);
 	}
 
 	/**
@@ -117,15 +119,14 @@ export class EgWalker {
 		// If the incoming event is from the same replica, we need to update the sequence number
 		// to ensure that the next generated event ID is unique.
 		if (event.replicaId === this.replicaId) {
-			const eventSequenceNumber = parseInt(event.id.split(':')[1], 10);
+			const eventSequenceNumber = parseInt(event.id.split(":")[1], 10);
 			if (eventSequenceNumber >= this.sequenceNumber) {
 				this.sequenceNumber = eventSequenceNumber + 1;
 			}
 		}
 
 		const currentHeads = new Set(this.graph.getVersion());
-		const isDirectSuccessor =
-			event.parents.length === currentHeads.size &&
+		const isDirectSuccessor = event.parents.length === currentHeads.size &&
 			event.parents.every((p) => currentHeads.has(p));
 
 		this.graph.addEvent(event);
@@ -169,7 +170,8 @@ export class EgWalker {
 							next = new YArray(this.doc, newPath);
 						} else if (
 							op.type === TEXT_INSERT_OP ||
-							op.type === TEXT_FORMAT_OP
+							op.type === TEXT_FORMAT_OP ||
+							op.type === TEXT_DELETE_OP
 						) {
 							next = new YText(this.doc, newPath);
 						} else {
@@ -183,17 +185,23 @@ export class EgWalker {
 					current._set(key as string, next);
 				}
 			} else if (current instanceof YArray) {
-				next = current.get(key as number) as YMap | YArray | YText | undefined;
+				next = current.get(key as number) as
+					| YMap
+					| YArray
+					| YText
+					| undefined;
 				if (!next) {
-					throw new EgWalkerError(`Could not find CRDT at path index: ${key}`);
+					throw new EgWalkerError(
+						`Could not find CRDT at path index: ${key}`,
+					);
 				}
 			} else if (current instanceof YText) {
 				throw new EgWalkerError(
-					`Path continues after YText at ${op.path.join('/')}`,
+					`Path continues after YText at ${op.path.join("/")}`,
 				);
 			} else {
 				throw new EgWalkerError(
-					`Invalid path component in path: ${op.path.join('/')}`,
+					`Invalid path component in path: ${op.path.join("/")}`,
 				);
 			}
 			current = next;
@@ -206,21 +214,25 @@ export class EgWalker {
 				if (target instanceof YMap) {
 					target._applySet(op.key, op.value);
 				} else {
-					throw new EgWalkerError('Target for map-set is not a YMap');
+					throw new EgWalkerError("Target for map-set is not a YMap");
 				}
 				break;
 			case ARRAY_INSERT_OP:
 				if (target instanceof YArray) {
 					target._applyInsert(op.index, op.values);
 				} else {
-					throw new EgWalkerError('Target for array-insert is not a YArray');
+					throw new EgWalkerError(
+						"Target for array-insert is not a YArray",
+					);
 				}
 				break;
 			case ARRAY_DELETE_OP:
 				if (target instanceof YArray) {
 					target._applyDelete(op.index, op.length);
 				} else {
-					throw new EgWalkerError('Target for array-delete is not a YArray');
+					throw new EgWalkerError(
+						"Target for array-delete is not a YArray",
+					);
 				}
 				break;
 			case ARRAY_REPLACE_OP:
@@ -228,9 +240,9 @@ export class EgWalker {
 					target._applyReplace(op.values);
 				} else {
 					throw new EgWalkerError(
-						`Target for array-replace is not a YArray, but a ${
-							target.constructor.name
-						} at path ${op.path.join('/')}`,
+						`Target for array-replace is not a YArray, but a ${target.constructor.name} at path ${
+							op.path.join("/")
+						}`,
 					);
 				}
 				break;
@@ -238,15 +250,27 @@ export class EgWalker {
 				if (target instanceof YText) {
 					target._applyInsert(op.index, op.text);
 				} else {
-					throw new EgWalkerError('Target for text-insert is not a YText');
+					throw new EgWalkerError(
+						"Target for text-insert is not a YText",
+					);
 				}
 				break;
 			case TEXT_FORMAT_OP:
 				if (target instanceof YText) {
-					// Formatting application is complex and not fully implemented here.
-					// This is a placeholder for where that logic would go.
+					target._applyFormat(op.index, op.length, op.attributes);
 				} else {
-					throw new EgWalkerError('Target for text-format is not a YText');
+					throw new EgWalkerError(
+						"Target for text-format is not a YText",
+					);
+				}
+				break;
+			case TEXT_DELETE_OP:
+				if (target instanceof YText) {
+					target._applyDelete(op.index, op.length);
+				} else {
+					throw new EgWalkerError(
+						"Target for text-delete is not a YText",
+					);
 				}
 				break;
 		}
@@ -283,10 +307,16 @@ export class EgWalker {
 	loadStateSnapshot(snapshot: StateSnapshot) {
 		// Do not overwrite this replica's ID.
 		// this.replicaId = snapshot.replicaId;
-		this.sequenceNumber = snapshot.sequenceNumber;
+		// Use the max to avoid event ID collisions when loading another replica's snapshot.
+		this.sequenceNumber = Math.max(
+			this.sequenceNumber,
+			snapshot.sequenceNumber,
+		);
 
 		this.graph = createEventGraph();
-		snapshot.graph.events.forEach(([_, event]) => this.graph.addEvent(event));
+		snapshot.graph.events.forEach(([_, event]) =>
+			this.graph.addEvent(event)
+		);
 
 		const newRoot = YMap.fromJSON(this.doc, [], snapshot.doc);
 		this.doc._setRoot(newRoot);
