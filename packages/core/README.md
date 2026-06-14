@@ -143,8 +143,21 @@ console.log(map.get("x")); // undefined
 
 ---
 
-## Monorepo Integrations
+## Subpath Exports
 
-For network synchronization and persistence, utilize the specialized workspace packages:
-- **Client Synchronization**: Refer to [`@ddgll/ts-crdt-client`](../client/README.md) for WebSocket client-binding and editor text syncing.
-- **Server Replication & DB Storage**: Refer to [`@ddgll/ts-crdt-server`](../server/README.md) for running collaborative WebSocket backends and database persistence adapters.
+This package contains everything needed to build a real-time collaborative application, exposed via subpaths:
+
+- **Core Library (`@ddgll/ts-crdt` or `@ddgll/ts-crdt/core`)**: Includes the data structures, DAG event graph, snapshots, and walker.
+- **Client Sync (`@ddgll/ts-crdt/client`)**: Provides the `CrdtClient` to bind a document to a WebSocket connection and perform text-diff syncing.
+- **Server Sync (`@ddgll/ts-crdt/server`)**: Provides the `CrdtServer` and `handleWebSocket` to manage collaborative sessions and persist events.
+
+For example, to import the WebSocket Client:
+```typescript
+import { CrdtClient } from "@ddgll/ts-crdt/client";
+```
+
+Or to run a WebSocket server in Hono/Node:
+```typescript
+import { handleWebSocket } from "@ddgll/ts-crdt/server";
+```
+

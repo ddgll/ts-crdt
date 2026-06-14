@@ -1,6 +1,6 @@
 # Interactive Editor Integration Guide
 
-This document describes how the real-time collaborative text editor demo integrates the `@ddgll/ts-crdt` core engine, `@ddgll/ts-crdt-client`, and `@ddgll/ts-crdt-server` packages to synchronize state.
+This document describes how the real-time collaborative text editor demo integrates the `@ddgll/ts-crdt` core engine, `@ddgll/ts-crdt/client`, and `@ddgll/ts-crdt/server` subpaths to synchronize state.
 
 ---
 
@@ -43,7 +43,7 @@ sequenceDiagram
 
 ## 1. Server-Side Integration (`packages/demo/server/server.ts`)
 
-The server is built with **Hono** running on Node.js. It manages the HTTP server lifecycle, upgrades connections to WebSockets, and delegates persistence and replication to `@ddgll/ts-crdt-server`.
+The server is built with **Hono** running on Node.js. It manages the HTTP server lifecycle, upgrades connections to WebSockets, and delegates persistence and replication to `@ddgll/ts-crdt/server`.
 
 ### Room Repositories
 The server isolates collaborative sessions using the `Repository` pattern defined by the server package. Each room corresponds to a specific `Repository` instance that handles SQL storage operations:
@@ -104,7 +104,7 @@ app.get(
 
 ## 2. Client-Side Integration (`packages/demo/interactive-test/rich.ts`)
 
-The client application sets up a [Tiptap](https://tiptap.dev/) editor and wraps a local `Doc` with the `CrdtClient` class from `@ddgll/ts-crdt-client`.
+The client application sets up a [Tiptap](https://tiptap.dev/) editor and wraps a local `Doc` with the `CrdtClient` class from `@ddgll/ts-crdt/client`.
 
 ### Initialization & Binding
 The client connects via a native browser WebSocket and binds it to the `CrdtClient` instance:

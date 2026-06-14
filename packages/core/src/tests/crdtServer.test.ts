@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { CrdtServer, Repository, MinimalWebSocket } from "../crdtServer.js";
-import { CrdtEvent } from "@ddgll/ts-crdt";
+import { CrdtEvent } from "../index.js";
 
 class MockRepository implements Repository {
   events: CrdtEvent[] = [];

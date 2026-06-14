@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Doc, CrdtEvent } from "@ddgll/ts-crdt";
+import { Doc, CrdtEvent } from "../index.js";
 import { CrdtClient, MinimalClientWebSocket } from "../crdtClient.js";
 
 class MockClientWebSocket implements MinimalClientWebSocket {

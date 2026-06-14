@@ -5,15 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm run build:server && pnpm run build:rich && pnpm run build:index && node dist/server.js",
-    "build:server": "esbuild server/server.ts --bundle --platform=node --outfile=dist/server.js --format=esm --external:drizzle-orm --external:@libsql/client --external:hono --external:@hono/node-server --external:@hono/node-ws --external:@ddgll/ts-crdt --external:@ddgll/ts-crdt-client --external:@ddgll/ts-crdt-server",
+    "build:server": "esbuild server/server.ts --bundle --platform=node --outfile=dist/server.js --format=esm --external:drizzle-orm --external:@libsql/client --external:hono --external:@hono/node-server --external:@hono/node-ws --external:@ddgll/ts-crdt",
     "build:rich": "esbuild interactive-test/rich.ts --bundle --outfile=interactive-test/rich.js --format=esm",
     "build:index": "esbuild interactive-test/main.ts --bundle --outfile=interactive-test/main.js --format=esm",
     "e2e": "playwright test --config=./e2e/playwright.config.ts"
   },
   "dependencies": {
     "@ddgll/ts-crdt": "workspace:^",
-    "@ddgll/ts-crdt-client": "workspace:^",
-    "@ddgll/ts-crdt-server": "workspace:^",
     "@hono/node-ws": "^1.2.0",
     "@libsql/client": "^0.15.15",
     "@tiptap/core": "^3.6.2",

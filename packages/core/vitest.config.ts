@@ -12,6 +12,8 @@ export default defineConfig({
         "src/crdtTypes/**/*.ts",
         "src/egWalker/**/*.ts",
         "src/eventGraph/**/*.ts",
+        "src/crdtClient.ts",
+        "src/crdtServer.ts",
       ],
       exclude: ["**/tests/**", "**/node_modules/**", "**/dist/**"],
       all: true,

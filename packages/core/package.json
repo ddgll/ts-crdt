@@ -14,6 +14,18 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./core": {
+      "import": "./dist/core.js",
+      "types": "./dist/core.d.ts"
+    },
+    "./client": {
+      "import": "./dist/client.js",
+      "types": "./dist/client.d.ts"
+    },
+    "./server": {
+      "import": "./dist/server.js",
+      "types": "./dist/server.d.ts"
     }
   },
   "repository": {

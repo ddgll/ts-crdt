@@ -13,8 +13,6 @@
   },
   "references": [
     { "path": "./packages/core" },
-    { "path": "./packages/client" },
-    { "path": "./packages/server" },
     { "path": "./packages/demo" }
   ],
   "files": []

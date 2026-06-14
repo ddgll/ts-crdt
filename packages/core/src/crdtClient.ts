@@ -1,4 +1,4 @@
-import { Doc, ServerMessage, YArray, YText, YMap } from "@ddgll/ts-crdt";
+import { Doc, ServerMessage, YArray, YText, YMap } from "./index.js";
 
 /**
  * Minimal WebSocket interface required by CrdtClient.

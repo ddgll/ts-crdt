@@ -8,9 +8,7 @@ This project is organized as a **pnpm workspace** divided into the following pac
 
 | Package | Name | Description |
 | :--- | :--- | :--- |
-| [**`packages/core`**](./packages/core) | `@ddgll/ts-crdt` | The core CRDT engine implementing the DAG-based `EventGraph`, `EgWalker`, state snapshotting, undo/redo history, awareness/presence, and CRDT types (`YMap`, `YArray`, `YText`). |
-| [**`packages/client`**](./packages/client) | `@ddgll/ts-crdt-client` | Client-side WebSocket integration that binds a local `Doc` to a collaborative websocket connection and includes a text-diffing sync helper (`syncText`). |
-| [**`packages/server`**](./packages/server) | `@ddgll/ts-crdt-server` | Reusable server-side collaborative sync agent. Manages in-memory document state, broadcasts events to connected clients, and abstracts database persistence via the `Repository` pattern. |
+| [**`packages/core`**](./packages/core) | `@ddgll/ts-crdt` | The core CRDT engine implementing the DAG-based `EventGraph`, `EgWalker`, state snapshotting, undo/redo history, awareness/presence, and CRDT types (`YMap`, `YArray`, `YText`). It also exposes `@ddgll/ts-crdt/client` (WebSocket client sync) and `@ddgll/ts-crdt/server` (WebSocket server sync). |
 | [**`packages/demo`**](./packages/demo) | `@ddgll/ts-crdt-demo` | A full-stack real-time collaborative rich-text and plain-text editor demo built using Tiptap, WebSockets, Hono, and SQLite (Drizzle ORM). |
 
 ---

@@ -5,7 +5,7 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { drizzle } from "drizzle-orm/libsql";
 import { createClient } from "@libsql/client";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { handleWebSocket, resetServer, Repository } from "@ddgll/ts-crdt-server";
+import { handleWebSocket, resetServer, Repository } from "@ddgll/ts-crdt/server";
 import { eq } from "drizzle-orm";
 import * as schema from "./db/schema.js";
 

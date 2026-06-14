@@ -1,7 +1,7 @@
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Doc } from "@ddgll/ts-crdt";
-import { CrdtClient } from "@ddgll/ts-crdt-client";
+import { CrdtClient } from "@ddgll/ts-crdt/client";
 
 const replicaId = crypto.randomUUID();
 const doc = new Doc(replicaId);

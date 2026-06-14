@@ -1,5 +1,5 @@
 import { Doc } from "@ddgll/ts-crdt";
-import { CrdtClient } from "@ddgll/ts-crdt-client";
+import { CrdtClient } from "@ddgll/ts-crdt/client";
 
 const textarea = document.getElementById("user1") as HTMLTextAreaElement;
 const replicaId = crypto.randomUUID();

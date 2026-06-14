@@ -1,4 +1,4 @@
-import { CrdtEvent, Doc, ServerMessage, ClientMessage } from "@ddgll/ts-crdt";
+import { CrdtEvent, Doc, ServerMessage, ClientMessage } from "./index.js";
 
 /**
  * Interface representing a repository to persist and load CRDT events.
