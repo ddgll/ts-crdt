@@ -1,81 +1,211 @@
-# Interactive Test Implementation
+# Interactive Editor Integration Guide
 
-This document provides a detailed explanation of the interactive rich-text editor, covering both the server and client-side implementations.
+This document describes how the real-time collaborative text editor demo integrates the `@ddgll/ts-crdt` core engine, `@ddgll/ts-crdt-client`, and `@ddgll/ts-crdt-server` packages to synchronize state.
 
-## Server-Side Implementation (`server/server.ts`)
+---
 
-The server is the central authority in the collaborative editing environment, responsible for receiving, persisting, and broadcasting changes to all connected clients. It is built with Hono, a lightweight and fast web framework for Node.js, and uses WebSockets for real-time communication.
+## Architecture Diagram
 
-### Core Technologies
+The diagram below outlines the synchronization, broadcast, and persistence architecture of the monorepo:
 
--   **Hono**: A modern web framework for building APIs and web applications.
--   **Drizzle ORM**: A TypeScript ORM used for interacting with the SQLite database.
--   **@hono/node-ws**: A middleware that enables WebSocket support in Hono applications running on Node.js.
--   **SQLite**: A self-contained, serverless SQL database engine used for persisting CRDT events.
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client A as Client A (Browser)
+    participant Core A as Local Doc & Client A
+    participant WS as WebSocket (Hono WS)
+    participant Server as CrdtServer (Server)
+    participant DB as SQLite (Drizzle ORM)
+    actor Client B as Client B (Browser)
 
-### Server Initialization
+    Note over Client A, Client B: Initialization (Binding)
+    Server->>DB: getEvents() (Load room history)
+    DB-->>Server: Return stored CrdtEvents
+    Client A->>WS: Connects to /ws?room=room-1
+    WS->>Server: handleWebSocket(socket, repository)
+    Server-->>Client A: Send "snapshot" message (Full document state)
+    Core A->>Core A: loadStateSnapshot(data)
+    Note over Client A: Editor unlocked for editing
 
-The `initializeServer` function is the entry point for the server. It performs the following steps:
+    Note over Client A, Client B: Collaboration Cycle
+    Client A->>Core A: Typess text ("Hello")
+    Core A->>Core A: Calculates character diff & updates local Doc
+    Core A->>WS: Sends CrdtEvent (via WebSocket.send)
+    WS->>Server: Receives ClientMessage (CrdtEvent)
+    Server->>DB: saveEvent(event) (Persist event to database)
+    Server->>Server: integrateRemote([event])
+    Server-->>Client B: Broadcast "event" message to Client B
+    Client B->>Client B: integrateRemote([event]) if replicaId matches
+    Client B->>Client B: Update Editor HTML (avoiding local echo loop)
+```
 
-1.  **Database Migration**: It runs database migrations using Drizzle to ensure the database schema is up-to-date.
-2.  **State Loading**: It loads all existing CRDT events from the `events` table in the database and integrates them into a central `Doc` instance. This allows the server to reconstruct the document's current state upon startup. If no events are found, it initializes a new document.
+---
 
-### WebSocket Communication
+## 1. Server-Side Integration (`packages/demo/server/server.ts`)
 
-The server uses WebSockets to maintain a persistent connection with each client.
+The server is built with **Hono** running on Node.js. It manages the HTTP server lifecycle, upgrades connections to WebSockets, and delegates persistence and replication to `@ddgll/ts-crdt-server`.
 
--   **`onOpen`**: When a client connects, the server assigns it a unique ID, adds it to a `sockets` map, and sends the complete document state as a "snapshot." This ensures the new client is immediately synchronized with the current content.
--   **`onMessage`**: When a client sends a CRDT event, the server:
-    1.  Persists the event to the SQLite database.
-    2.  Integrates the event into its own `Doc` instance.
-    3.  Broadcasts the event to all connected clients, ensuring everyone receives the update.
--   **`onClose` / `onError`**: When a client disconnects or an error occurs, the server removes the client from the `sockets` map to prevent attempts to send messages to a closed connection.
+### Room Repositories
+The server isolates collaborative sessions using the `Repository` pattern defined by the server package. Each room corresponds to a specific `Repository` instance that handles SQL storage operations:
 
-### API Endpoints
+```typescript
+const repositories = new Map<string, Repository>();
 
--   **`/ws`**: The WebSocket endpoint where clients connect for real-time communication.
--   **`/reset`**: A utility endpoint that clears the database and resets the in-memory document state. This is primarily used for testing to ensure a clean state between test runs.
+function getRoomRepository(roomId: string): Repository {
+  let repo = repositories.get(roomId);
+  if (!repo) {
+    repo = {
+      getEvents: async () => {
+        return await db
+          .select()
+          .from(schema.events)
+          .where(eq(schema.events.roomId, roomId));
+      },
+      saveEvent: async (event) => {
+        await db.insert(schema.events).values({
+          id: event.id,
+          roomId,
+          replicaId: event.replicaId,
+          parents: event.parents,
+          op: event.op,
+        });
+      },
+      clearEvents: async () => {
+        await db.delete(schema.events).where(eq(schema.events.roomId, roomId));
+      },
+    };
+    repositories.set(roomId, repo);
+  }
+  return repo;
+}
+```
 
-### Static File Serving
+### Upgrading WebSocket Connections
+When a client connects to `/ws?room=<id>`, Hono upgrades the connection. The server retrieves the corresponding room repository and delegates connection management to the library's `handleWebSocket` helper:
 
-The server is also responsible for serving the static files for the client-side application, including the HTML, CSS, and the bundled JavaScript for the interactive test.
+```typescript
+app.get(
+  "/ws",
+  upgradeWebSocket((c) => {
+    const roomId = c.req.query("room") || "default";
+    const roomRepository = getRoomRepository(roomId);
+    return {
+      onOpen: (_evt, webSocket) => {
+        if (!webSocket.raw) return;
+        // Delegate WebSocket synchronization and broadcasting to server library
+        handleWebSocket(webSocket.raw, roomRepository).catch(console.error);
+      },
+    };
+  })
+);
+```
 
-## Client-Side Implementation (`interactive-test/rich.ts`)
+---
 
-The client-side script manages the user interface, handles user input, and communicates with the server to synchronize the document state.
+## 2. Client-Side Integration (`packages/demo/interactive-test/rich.ts`)
 
-### Core Technologies
+The client application sets up a [Tiptap](https://tiptap.dev/) editor and wraps a local `Doc` with the `CrdtClient` class from `@ddgll/ts-crdt-client`.
 
--   **Tiptap**: A headless, framework-agnostic editor toolkit that provides a rich set of extensions for building custom text editors.
--   **WebSocket**: The native browser API for real-time, bidirectional communication with the server.
+### Initialization & Binding
+The client connects via a native browser WebSocket and binds it to the `CrdtClient` instance:
 
-### Editor Setup
+```typescript
+const doc = new Doc(replicaId);
+const client = new CrdtClient(doc);
 
-The client initializes a Tiptap `Editor` instance and configures it with the `StarterKit` extension, which provides a baseline of common text editing features (e.g., bold, italics, headings, lists). The editor is initially set to be non-editable until a connection with the server is established and the initial state is loaded.
+const ws = new WebSocket(`ws://${location.host}/ws?room=${roomId}`);
+client.bind(ws);
+```
 
-### WebSocket Communication
+### Local Change Synchronization (The Update Loop)
+When the user edits text inside the editor, Tiptap fires an `update` event. To synchronize this efficiently, we must detect what text has changed, compute character-level inserts or deletes, and apply them. We also must ensure that incoming remote updates do not cause a feedback loop (triggering local change handlers when modifying the editor programmatically).
 
-The client establishes a WebSocket connection to the server's `/ws` endpoint.
+#### Loop Prevention
+We use the `isApplyingRemoteChanges()` flag to check if the incoming change was caused by a remote user:
 
--   **`onopen`**: Logs a message to the console indicating a successful connection.
--   **`onmessage`**: Handles incoming messages from the server.
-    -   **`snapshot`**: When a snapshot is received, the client loads the entire document state into its local `Doc` instance. It then updates the editor's content, marks the editor as editable, and sets the `isInitialized` flag to `true`.
-    -   **`event`**: When a remote CRDT event is received, the client first checks that the event is not an echo of its own change (by comparing `replicaId`). If it's a valid remote event, it integrates the event into its local `Doc` and updates the editor's content.
--   **`onclose` / `onerror`**: If the connection is lost, the editor is set back to non-editable to prevent further changes.
+```typescript
+let isApplyingRemoteChanges = false;
 
-### State Synchronization
+// 1. Listen for remote events/snapshots to update editor content
+client.onMessage((type, data) => {
+  isApplyingRemoteChanges = true;
+  
+  if (type === "snapshot" || type === "event") {
+    const rootMap = doc.getMap();
+    // Reconstruct editor content from the CRDT document
+    const content = rootMap.getArray("content").toJSON().join("");
+    
+    // Programmatically set Tiptap's content
+    editor.commands.setContent(content, false);
+  }
 
-A critical aspect of the client is managing the flow of changes to prevent infinite loops, where a remote update triggers a local update, which is then sent back to the server.
+  // Allow browser DOM to complete layout before releasing loop block
+  setTimeout(() => {
+    isApplyingRemoteChanges = false;
+  }, 0);
+});
 
--   **`isApplyingRemoteChanges` flag**: This flag is set to `true` just before the client's content is updated with remote changes. The `editor.on("update", ...)` handler checks this flag and ignores any changes that occur while it is `true`. A `setTimeout` is used to reset the flag asynchronously, ensuring that the DOM has fully updated before re-enabling local change detection.
+// 2. Listen for local editor changes and push to server
+editor.on("update", () => {
+  if (isApplyingRemoteChanges) return; // Skip if update was remote
 
-### Local Change Detection
+  const newHtml = editor.getHTML();
+  
+  // Use client helper to compute and apply character-level diffs
+  client.syncText(["content"], newHtml, "array");
+});
+```
 
-When the user modifies the content in the editor, the `editor.on("update", ...)` event is triggered. The client then performs a diffing algorithm on the editor's HTML content to determine what has changed:
+---
 
-1.  It compares the `newHtml` with the `previousHtml` to find the start and end of the changed region.
-2.  Based on the diff, it identifies deleted and inserted content.
-3.  It generates the corresponding `localDelete` and `localInsert` CRDT events.
-4.  These events are sent to the server via the WebSocket connection.
-5.  Finally, it.
-This diffing approach ensures that only the minimal necessary changes are sent over the network, making the collaborative experience efficient.
+## 3. Sync Message Protocol
+
+Clients and servers communicate by sending JSON-serialized string messages matching the following schema definitions:
+
+### `ServerMessage` (Server -> Client)
+- **`snapshot`**: Sent upon initial connection. Contains the complete Event Graph, last sequence number, and document state.
+  ```json
+  {
+    "type": "snapshot",
+    "data": {
+      "doc": { ... },
+      "graph": { "events": [ ... ] },
+      "replicaId": "server-replica",
+      "sequenceNumber": 42
+    }
+  }
+  ```
+- **`event`**: Sent when broadcasting a single collaborative change.
+  ```json
+  {
+    "type": "event",
+    "data": {
+      "id": "replica-A:5",
+      "replicaId": "replica-A",
+      "parents": ["replica-B:2"],
+      "op": {
+        "type": "array-insert",
+        "path": ["content"],
+        "index": 12,
+        "values": ["H", "e", "l", "l", "o"]
+      }
+    }
+  }
+  ```
+
+### `ClientMessage` (Client -> Server)
+A single JSON-serialized `CrdtEvent` object representing a mutating change:
+```json
+{
+  "id": "replica-A:6",
+  "replicaId": "replica-A",
+  "parents": ["replica-A:5"],
+  "op": {
+    "type": "array-delete",
+    "path": ["content"],
+    "index": 12,
+    "length": 5
+  }
+}
+```
+The server validates, saves, integrates, and forwards this event to other rooms.

@@ -1,192 +1,150 @@
-# @ddgll/ts-crdt
+# @ddgll/ts-crdt (Core Library)
 
-A modern, event-driven CRDT (Conflict-free Replicated Data Type) library for
-building real-time collaborative applications in TypeScript.
+A modern, event-driven, DAG-based CRDT (Conflict-free Replicated Data Type) library for building real-time collaborative applications in TypeScript.
 
-## Introduction
+## Key Features
 
-The @ddgll/ts-crdt library is a powerful toolkit for building real-time
-collaborative applications. It provides a set of data structures that can be
-independently updated and then merged without conflicts, making it ideal for
-distributed systems. The library is built around a generalized, event-driven
-architecture, ensuring that changes are propagated efficiently and consistently
-across all replicas.
+- **Event-Driven Architecture**: Mutating operations generate immutable events stored in a Directed Acyclic Graph (DAG) for deterministic convergence.
+- **Rich Collaborative Types**: Built-in support for `YMap`, `YArray`, and `YText` (with formatting/formatting events).
+- **Non-Destructive History**: Undo and Redo management using the `UndoManager` and travel-in-time capabilities using state snapshots and version histories.
+- **Ephemeral State Tracking**: Native support for presence and ephemeral client state tracking (awareness) such as cursors.
+- **Strictly Typed & Convergence-Tested**: Built with strict TypeScript and convergence guarantees validated under heavy unit testing.
+
+---
 
 ## Core Concepts
 
-The library is built around a few key components:
+The core library is centered around these primary components:
 
-- **`Doc`**: The main container for a CRDT document. It holds the shared data
-  types and the event graph.
-- **`EgWalker` (EventGraph Walker)**: The engine that processes and applies
-  changes to the document. It manages the event graph, replica IDs, and
-  awareness state.
-- **Event Graph**: A directed acyclic graph (DAG) of all operations that have
-  occurred in the document. This graph is the source of truth and allows for
-  powerful features like history traversal and synchronization.
+- **`Doc`**: The root document container. Serves as the entry point to instantiate collaborative shared types and access the internal walking engine.
+- **`EgWalker`**: The Event Graph walker engine. Processes incoming remote events, registers local actions, and maintains metadata like replica sequence numbers and awareness.
+- **`EventGraph`**: A directed acyclic graph (DAG) representing all applied operations. It is the logical source of truth, facilitating version tracking, delta computations, and deterministic sorting of concurrent edits.
+
+---
 
 ## Getting Started
 
-First, install the library:
+### Installation
 
 ```bash
 pnpm add @ddgll/ts-crdt
 ```
 
-Then, you can start using it in your project:
+### Basic Usage
 
 ```typescript
 import { Doc } from "@ddgll/ts-crdt";
 
-// Create a new document with a unique ID for this client
-const doc = new Doc("replica-1");
+// 1. Create a document instance for a specific replica/client
+const doc = new Doc("replica-A");
 
-// Get the root map
+// 2. Access the root YMap
 const rootMap = doc.getMap();
 
-// Set a value
-rootMap.set("key", "value");
+// 3. Perform local operations
+rootMap.set("username", "alice");
 
-// Get the value
-console.log(rootMap.get("key")); // Outputs: 'value'
+// 4. Retrieve values
+console.log(rootMap.get("username")); // Output: 'alice'
 
-// The library automatically tracks changes in an event graph.
-// You can get the changes since a certain version to send to other clients.
-const changes = doc.egWalker.graph.getChangesSince([]);
-console.log(changes);
+// 5. Query changes to sync with other clients
+const version = doc.egWalker.getVersion();
+const changes = doc.egWalker.graph.getChangesSince([]); // get all events
 ```
 
-## Data Types
+---
 
-The library provides several shared data types that you can use to build your
-collaborative data model.
+## Shared Collaborative Data Types
 
 ### `YMap`
-
-A shared map, similar to a JavaScript `Map`.
+A shared key-value map supporting nested maps, arrays, or text.
 
 ```typescript
 const map = doc.getMap();
+map.set("title", "Project Docs");
 
-// Set key-value pairs
-map.set("name", "John Doe");
-map.set("age", 30);
-
-// Create a nested map
-const address = map.getMap("address");
-address.set("street", "123 Main St");
+// Nesting another Map
+const settings = map.getMap("settings");
+settings.set("theme", "dark");
 ```
 
 ### `YArray`
-
-A shared array, similar to a JavaScript `Array`.
+A collaborative ordered list of values or nested collaborative types.
 
 ```typescript
-const array = doc.getMap().getArray("myArray");
-
-// Insert elements
-array.insert(0, ["a", "b", "c"]); // -> ['a', 'b', 'c']
-
-// Delete elements
-array.delete(1, 1); // -> ['a', 'c']
-
-// Replace the entire array
-array.replace(["x", "y", "z"]); // -> ['x', 'y', 'z']
+const list = doc.getMap().getArray("todoList");
+list.insert(0, ["Buy milk", "Walk the dog"]);
+list.delete(1, 1); // Removes 'Walk the dog'
+list.replace(["Read a book"]); // Replaces all elements
 ```
 
 ### `YText`
-
-A shared text type for collaborative rich-text editing.
+A collaborative text container for building rich text editors, supporting index-based insertions, deletions, and formatting attributes.
 
 ```typescript
-const text = doc.getMap().getText("myText");
-
-// Insert text
+const text = doc.getMap().getText("editorText");
 text.insert(0, "Hello World");
-console.log(text.toString()); // "Hello World"
-
-// Apply bold formatting to "Hello"
-text.format(0, 5, { bold: true });
+text.format(0, 5, { bold: true }); // formats "Hello" with bold: true
 ```
+
+---
 
 ## Advanced Features
 
-### Undo/Redo
+### Undo/Redo (Non-Destructive History)
 
-The `UndoManager` provides a simple way to add undo/redo functionality to your
-application.
+`UndoManager` tracks document versions in the event graph to perform non-destructive history traversal.
 
 ```typescript
 import { UndoManager } from "@ddgll/ts-crdt";
 
 const undoManager = new UndoManager(doc.egWalker);
 
-map.set("key", "value1");
-undoManager.track();
+map.set("counter", 1);
+undoManager.track(); // Snapshot version 1
 
-map.set("key", "value2");
-undoManager.track();
+map.set("counter", 2);
+undoManager.track(); // Snapshot version 2
 
 undoManager.undo();
-console.log(map.get("key")); // 'value1'
+console.log(map.get("counter")); // 1
 
 undoManager.redo();
-console.log(map.get("key")); // 'value2'
+console.log(map.get("counter")); // 2
 ```
 
-### Awareness / Presence
+### Presence & Ephemeral Awareness
 
-Awareness allows clients to share ephemeral state, such as cursor positions or
-online status, without saving it to the document's event graph.
+Share ephemeral data (like cursor locations or active selections) across clients without writing it to the persistent event graph.
 
 ```typescript
-// Set the local awareness state
-doc.egWalker.setAwareness({ user: "Alice", cursor: { x: 10, y: 20 } });
+// Broadcast local cursor
+doc.egWalker.setAwareness({ cursor: { line: 5, ch: 12 } });
 
-// Get the awareness state of a specific client
-const alicesState = doc.egWalker.getAwareness("replica-1");
+// Read another user's status
+const partnerState = doc.egWalker.getAwareness("replica-B");
 ```
 
-### History Traversal
+### Time-Travel History Rebuilds
 
-You can revert the document to any previous version in its history without
-modifying the event graph itself. This is useful for viewing historical
-snapshots.
+Revert the document state to any previous topological version in the DAG without destroying intermediate events.
 
 ```typescript
-// Get the current version
-const currentVersion = doc.egWalker.getVersion();
+// Record a version
+const oldVersion = doc.egWalker.getVersion();
 
-// Make some changes...
-map.set("anotherKey", "anotherValue");
+// Make some edits
+map.set("x", 100);
 
-// Revert the document state to the previous version
-doc.egWalker.rebuildStateAtVersion(currentVersion);
+// Travel back in time (restores state in-memory)
+doc.egWalker.rebuildStateAtVersion(oldVersion);
+console.log(map.get("x")); // undefined
 ```
 
-## Contributing
+---
 
-We welcome contributions! To get started, set up the monorepo environment:
+## Monorepo Integrations
 
-1. **Install Dependencies**:
-   ```bash
-   pnpm i
-   ```
-
-2. **Run Tests**:
-   ```bash
-   pnpm test
-   ```
-
-3. **Lint and Type-Check**:
-   ```bash
-   pnpm lint
-   pnpm type-check
-   ```
-
-## Demo Application
-
-The `packages/demo` directory contains a rich-text editor built with Tiptap that
-demonstrates a real-world use case of the library, including real-time
-collaboration over WebSockets. See the `INTEGRATION.md` file within that package
-for more details on its implementation.
+For network synchronization and persistence, utilize the specialized workspace packages:
+- **Client Synchronization**: Refer to [`@ddgll/ts-crdt-client`](../client/README.md) for WebSocket client-binding and editor text syncing.
+- **Server Replication & DB Storage**: Refer to [`@ddgll/ts-crdt-server`](../server/README.md) for running collaborative WebSocket backends and database persistence adapters.
