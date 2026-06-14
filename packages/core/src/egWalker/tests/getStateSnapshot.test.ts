@@ -1,13 +1,16 @@
+import { describe, expect, it } from "vitest";
 import { Doc } from "../../crdtTypes/doc.js";
 
-test("EgWalker.getStateSnapshot - get state snapshot", () => {
-  const doc = new Doc();
-  const map = doc.getMap();
-  map.set("foo", "bar");
+describe("EgWalker.getStateSnapshot", () => {
+  it("get state snapshot", () => {
+    const doc = new Doc();
+    const map = doc.getMap();
+    map.set("foo", "bar");
 
-  const snapshot = doc.egWalker.getStateSnapshot();
-  const newDoc = new Doc();
-  newDoc.egWalker.loadStateSnapshot(snapshot);
+    const snapshot = doc.egWalker.getStateSnapshot();
+    const newDoc = new Doc();
+    newDoc.egWalker.loadStateSnapshot(snapshot);
 
-  expect(newDoc.getMap().get("foo")).toEqual("bar");
+    expect(newDoc.getMap().get("foo")).toEqual("bar");
+  });
 });
