@@ -8,3 +8,8 @@ export const events = sqliteTable("events", {
   parents: text("parents", { mode: "json" }).$type<string[]>().notNull(),
   op: text("op", { mode: "json" }).$type<Op>().notNull(),
 });
+
+export const documents = sqliteTable("documents", {
+  roomId: text("roomId").primaryKey(),
+  content: text("content").notNull(),
+});

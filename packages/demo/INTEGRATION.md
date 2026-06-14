@@ -209,3 +209,83 @@ A single JSON-serialized `CrdtEvent` object representing a mutating change:
 }
 ```
 The server validates, saves, integrates, and forwards this event to other rooms.
+
+---
+
+## 4. Alternative Configuration: In-Memory Events + Text-Only Persistence
+
+In addition to the default event-driven database replication, this demo workspace showcases a configuration where the SQLite database only stores the document's content as a simple text string, while the events are managed in-memory on the server.
+
+This configuration is implemented under the `/ws-text` WebSocket endpoint, utilizing `InMemoryTextRepository` in `packages/demo/server/server.ts`:
+
+### In-Memory Text Repository
+```typescript
+class InMemoryTextRepository implements Repository {
+  private roomId: string;
+  private doc: Doc;
+  private initialized = false;
+
+  constructor(roomId: string) {
+    this.roomId = roomId;
+    this.doc = new Doc("server-" + roomId);
+  }
+
+  async getEvents(): Promise<CrdtEvent[]> {
+    if (this.initialized) {
+      return Array.from(this.doc.egWalker.graph.events.values());
+    }
+
+    const rows = await db
+      .select()
+      .from(schema.documents)
+      .where(eq(schema.documents.roomId, this.roomId));
+    
+    const row = rows[0];
+
+    if (row && row.content !== null) {
+      const textArray = row.content.split("");
+      this.doc.localInsert(["content"], 0, textArray);
+    } else {
+      this.doc.localInsert(["content"], 0, []);
+    }
+
+    this.initialized = true;
+    return Array.from(this.doc.egWalker.graph.events.values());
+  }
+
+  async saveEvent(event: CrdtEvent): Promise<void> {
+    if (!this.initialized) {
+      await this.getEvents();
+    }
+
+    this.doc.egWalker.integrateRemote([event]);
+
+    const content = this.doc.getMap().getArray("content");
+    const text = content ? content.toJSON().join("") : "";
+
+    await db
+      .insert(schema.documents)
+      .values({
+        roomId: this.roomId,
+        content: text,
+      })
+      .onConflictDoUpdate({
+        target: schema.documents.roomId,
+        set: { content: text },
+      });
+  }
+
+  async clearEvents(): Promise<void> {
+    this.doc = new Doc("server-" + this.roomId);
+    this.initialized = true;
+    await db
+      .delete(schema.documents)
+      .where(eq(schema.documents.roomId, this.roomId));
+  }
+}
+```
+
+This configuration:
+- Allows the database schema to remain simple (just `roomId` and `content`).
+- Leverages the same `@ddgll/ts-crdt` synchronization engine in-memory on the server to handle concurrent conflicts and converge on a single merged state.
+- Saves the final converged state directly back to the database as a standard string.

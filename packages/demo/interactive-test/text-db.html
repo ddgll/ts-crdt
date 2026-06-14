@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CRDT Text-DB Interactive Test</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        padding: 2rem;
+      }
+      .nav-links {
+        display: flex;
+        gap: 1.5rem;
+        font-size: 1.1rem;
+      }
+      .container {
+        display: flex;
+        gap: 2rem;
+        align-items: flex-start;
+      }
+      textarea {
+        width: 400px;
+        height: 300px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>CRDT Text-DB Demo (In-Memory Events + Simple Text DB)</h1>
+    <nav class="nav-links">
+      <a href="/index.html">Original Area Demo</a>
+      <a href="/rich.html">Rich Text Editor Demo</a>
+      <span><strong>Text-DB Demo (Active)</strong></span>
+    </nav>
+    <div class="container">
+      <div>
+        <h2>User 1</h2>
+        <textarea id="user1"></textarea>
+      </div>
+    </div>
+    <script type="module" src="text-db.js"></script>
+  </body>
+</html>
