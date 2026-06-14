@@ -1,4 +1,4 @@
-import { Doc } from "../../crdtTypes/Doc.js";
+import { Doc } from "../../crdtTypes/doc.js";
 
 test("EgWalker.getStateSnapshot - get state snapshot", () => {
   const doc = new Doc();

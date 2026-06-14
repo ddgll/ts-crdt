@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { Doc } from "../../crdtTypes/Doc.js";
-import { YMap } from "../../crdtTypes/YMap.js";
-import { YArray } from "../../crdtTypes/YArray.js";
+import { Doc } from "../../crdtTypes/doc.js";
+import { YMap } from "../../crdtTypes/yMap.js";
+import { YArray } from "../../crdtTypes/yArray.js";
 import { EgWalkerError } from "../egWalker.js";
 import {
   ARRAY_DELETE_OP,

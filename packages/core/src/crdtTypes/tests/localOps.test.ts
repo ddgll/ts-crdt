@@ -1,4 +1,4 @@
-import { Doc } from "../Doc.js";
+import { Doc } from "../doc.js";
 
 test("Doc.localInsert - should insert values into a YArray", () => {
   const doc = new Doc();

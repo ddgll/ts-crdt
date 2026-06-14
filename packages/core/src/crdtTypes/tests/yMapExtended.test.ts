@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { Doc } from "../Doc.js";
-import { YMap } from "../YMap.js";
-import { YArray } from "../YArray.js";
+import { Doc } from "../doc.js";
+import { YMap } from "../yMap.js";
+import { YArray } from "../yArray.js";
 
 describe("YMap extended coverage", () => {
     it("should throw when getting a map from a non-map key", () => {

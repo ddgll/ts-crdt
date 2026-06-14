@@ -11,10 +11,10 @@ import {
 	TEXT_FORMAT_OP,
 	TEXT_INSERT_OP,
 } from "../eventGraph/eventGraph.js";
-import { Doc } from "../crdtTypes/Doc.js";
-import { YMap } from "../crdtTypes/YMap.js";
-import { YArray } from "../crdtTypes/YArray.js";
-import { YText } from "../crdtTypes/YText.js";
+import { Doc } from "../crdtTypes/doc.js";
+import { YMap } from "../crdtTypes/yMap.js";
+import { YArray } from "../crdtTypes/yArray.js";
+import { YText } from "../crdtTypes/yText.js";
 
 /**
  * Represents a snapshot of the document's state, including the data, event graph, and replica information.

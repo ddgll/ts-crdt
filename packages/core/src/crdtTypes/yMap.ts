@@ -1,6 +1,6 @@
-import { YArray } from "./YArray.js";
-import { YText } from "./YText.js";
-import type { Doc } from "./Doc.js";
+import { YArray } from "./yArray.js";
+import { YText } from "./yText.js";
+import type { Doc } from "./doc.js";
 import { CrdtEvent, MAP_SET_OP } from "../eventGraph/eventGraph.js";
 
 /**

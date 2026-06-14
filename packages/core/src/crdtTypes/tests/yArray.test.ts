@@ -1,4 +1,4 @@
-import { Doc } from "../Doc.js";
+import { Doc } from "../doc.js";
 
 describe("YArray", () => {
   it("should insert and get elements", () => {

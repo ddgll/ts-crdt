@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Doc } from "../Doc.js";
+import { Doc } from "../doc.js";
 
 describe("Doc extended coverage", () => {
     it("should not apply update if payload type is not 'set'", () => {

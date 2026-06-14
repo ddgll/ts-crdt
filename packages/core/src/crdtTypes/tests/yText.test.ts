@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Doc } from '../Doc';
+import { Doc } from '../doc.js';
 import { TextFormatOperation } from '../../eventGraph/eventGraph';
 
 describe('YText', () => {

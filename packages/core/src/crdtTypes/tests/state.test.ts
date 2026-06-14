@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Doc } from '../Doc';
+import { Doc } from '../doc.js';
 
 describe('CRDT State Management', () => {
   it('should initialize a new document with a clean state', () => {

@@ -1,4 +1,4 @@
-import { Doc } from "../../crdtTypes/Doc.js";
+import { Doc } from "../../crdtTypes/doc.js";
 import { CrdtEvent, MAP_SET_OP } from "../../eventGraph/eventGraph.js";
 
 test("EgWalker.integrateRemote - integrate remote events", () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { Doc } from "../Doc.js";
-import { YArray } from "../YArray.js";
-import { YMap } from "../YMap.js";
+import { Doc } from "../doc.js";
+import { YArray } from "../yArray.js";
+import { YMap } from "../yMap.js";
 
 describe("YArray extended coverage", () => {
     it("should replace all elements", () => {

@@ -1,4 +1,4 @@
-import { YMap } from './YMap.js';
+import { YMap } from './yMap.js';
 import { EgWalker } from '../egWalker/egWalker.js';
 import {
 	ARRAY_DELETE_OP,

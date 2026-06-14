@@ -1,4 +1,4 @@
-import { Doc } from "./Doc.js";
+import { Doc } from "./doc.js";
 import {
 	TEXT_DELETE_OP,
 	TEXT_FORMAT_OP,

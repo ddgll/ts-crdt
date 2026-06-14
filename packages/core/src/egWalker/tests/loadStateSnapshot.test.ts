@@ -1,5 +1,5 @@
-import { Doc } from "../../crdtTypes/Doc.js";
-import { YArray } from "../../crdtTypes/YArray.js";
+import { Doc } from "../../crdtTypes/doc.js";
+import { YArray } from "../../crdtTypes/yArray.js";
 
 test("EgWalker.loadStateSnapshot - load state snapshot", () => {
   const doc1 = new Doc();

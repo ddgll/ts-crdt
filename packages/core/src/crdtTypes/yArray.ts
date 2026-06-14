@@ -1,5 +1,5 @@
-import type { Doc } from "./Doc.js";
-import { YMap } from "./YMap.js";
+import type { Doc } from "./doc.js";
+import { YMap } from "./yMap.js";
 import {
 	ARRAY_DELETE_OP,
 	ARRAY_INSERT_OP,

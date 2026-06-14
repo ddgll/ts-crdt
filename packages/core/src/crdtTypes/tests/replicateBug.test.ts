@@ -1,4 +1,4 @@
-import { Doc } from "../Doc.js";
+import { Doc } from "../doc.js";
 import { isCrdtEvent } from "../../eventGraph/eventGraph.js";
 
 describe("Replicate bug", () => {

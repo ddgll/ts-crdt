@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { Doc } from '../../crdtTypes/Doc';
-import { UndoManager } from '../UndoManager';
+import { Doc } from '../../crdtTypes/doc.js';
+import { UndoManager } from '../undoManager.js';
 
 describe('Undo/Redo Management', () => {
   it('should undo and redo a change', () => {

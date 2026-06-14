@@ -1,5 +1,5 @@
-import { Doc } from "../Doc.js";
-import { YMap } from "../YMap.js";
+import { Doc } from "../doc.js";
+import { YMap } from "../yMap.js";
 
 describe("Doc", () => {
   it("should handle nested maps", () => {

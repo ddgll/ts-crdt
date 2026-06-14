@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Doc } from '../../crdtTypes/Doc';
+import { Doc } from '../../crdtTypes/doc.js';
 
 describe('History Navigation', () => {
   it('should rebuild the document state to a specific version', () => {
