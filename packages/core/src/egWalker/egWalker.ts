@@ -52,6 +52,18 @@ export class EgWalker {
 	private sequenceNumber = 0;
 	/** A map of awareness states for connected replicas. */
 	public awarenessStates = new Map<string, unknown>();
+	private eventListeners = new Set<(event: CrdtEvent, isLocal: boolean) => void>();
+
+	/**
+	 * Registers a callback to be notified when a new event is applied (either locally or integrated from a remote replica).
+	 * Returns an unsubscribe function.
+	 */
+	onEvent(cb: (event: CrdtEvent, isLocal: boolean) => void): () => void {
+		this.eventListeners.add(cb);
+		return () => {
+			this.eventListeners.delete(cb);
+		};
+	}
 
 	/**
 	 * Creates a new EgWalker instance.
@@ -104,6 +116,7 @@ export class EgWalker {
 		};
 		this.graph.addEvent(event);
 		this.applyNewEvent(event);
+		this.eventListeners.forEach((listener) => listener(event, true));
 		return event;
 	}
 
@@ -136,6 +149,10 @@ export class EgWalker {
 		} else {
 			this.rebuildStateAtVersion(this.graph.getVersion());
 		}
+
+		this.eventListeners.forEach((listener) =>
+			listener(event, event.replicaId === this.replicaId)
+		);
 	}
 
 	/**

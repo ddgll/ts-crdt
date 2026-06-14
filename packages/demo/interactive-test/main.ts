@@ -1,9 +1,10 @@
 import { Doc } from "@ddgll/ts-crdt";
+import { CrdtClient } from "@ddgll/ts-crdt-client";
 
 const textarea = document.getElementById("user1") as HTMLTextAreaElement;
 const replicaId = crypto.randomUUID();
 const doc = new Doc(replicaId);
-let isApplyingRemoteChanges = false;
+const client = new CrdtClient(doc);
 let isInitialized = false;
 
 // Disable the textarea until the client is initialized
@@ -14,31 +15,20 @@ const room = urlParams.get("room") || "default";
 const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const ws = new WebSocket(`${protocol}//${window.location.host}/ws?room=${room}`);
 
+client.bind(ws);
+
 ws.onopen = () => {
   console.log("Connected to server");
 };
 
-ws.onmessage = (message) => {
-  const { type, data } = JSON.parse(message.data);
-
-  isApplyingRemoteChanges = true;
+client.onMessage((type) => {
   if (type === "snapshot") {
-    doc.egWalker.loadStateSnapshot(data);
     isInitialized = true;
     textarea.disabled = false; // Enable input now
     console.log("Client initialized.");
-  } else if (type === "event") {
-    if (data.replicaId !== doc.egWalker.getReplicaId()) {
-      if (isInitialized) {
-        doc.egWalker.integrateRemote([data]);
-      } else {
-        console.warn("Ignoring event received before initialization.");
-      }
-    }
   }
   updateTextarea();
-  isApplyingRemoteChanges = false;
-};
+});
 
 ws.onclose = () => {
   console.log("Disconnected from server");
@@ -64,7 +54,7 @@ function updateTextarea() {
 }
 
 textarea.addEventListener("input", () => {
-  if (!isInitialized || isApplyingRemoteChanges) {
+  if (!isInitialized || client.isApplyingRemoteChanges()) {
     return;
   }
 
@@ -97,17 +87,11 @@ textarea.addEventListener("input", () => {
 
   const deletedLength = oldEnd - start;
   if (deletedLength > 0) {
-    const event = doc.localDelete(["content"], start, deletedLength);
-    if (event) {
-      ws.send(JSON.stringify(event));
-    }
+    doc.localDelete(["content"], start, deletedLength);
   }
 
   const insertedText = newText.substring(start, newEnd);
   if (insertedText.length > 0) {
-    const event = doc.localInsert(["content"], start, insertedText.split(""));
-    if (event) {
-      ws.send(JSON.stringify(event));
-    }
+    doc.localInsert(["content"], start, insertedText.split(""));
   }
 });

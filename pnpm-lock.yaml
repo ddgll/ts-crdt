@@ -54,6 +54,22 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@24.6.1)
 
+  packages/client:
+    dependencies:
+      '@ddgll/ts-crdt':
+        specifier: workspace:^
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.1
+        version: 24.6.1
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@24.6.1)
+
   packages/core: {}
 
   packages/demo:
@@ -61,6 +77,9 @@ importers:
       '@ddgll/ts-crdt':
         specifier: workspace:^
         version: link:../core
+      '@ddgll/ts-crdt-client':
+        specifier: workspace:^
+        version: link:../client
       '@ddgll/ts-crdt-server':
         specifier: workspace:^
         version: link:../server

@@ -1,10 +1,11 @@
 import { Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { Doc } from "@ddgll/ts-crdt";
+import { CrdtClient } from "@ddgll/ts-crdt-client";
 
 const replicaId = crypto.randomUUID();
 const doc = new Doc(replicaId);
-let isApplyingRemoteChanges = false;
+const client = new CrdtClient(doc);
 let isInitialized = false;
 
 const editor = new Editor({
@@ -88,35 +89,20 @@ const room = urlParams.get("room") || "default";
 const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const ws = new WebSocket(`${protocol}//${window.location.host}/ws?room=${room}`);
 
+client.bind(ws);
+
 ws.onopen = () => {
   console.log("Connected to server");
 };
 
-ws.onmessage = (message) => {
-  const { type, data } = JSON.parse(message.data);
-
-  isApplyingRemoteChanges = true;
+client.onMessage((type) => {
   if (type === "snapshot") {
-    doc.egWalker.loadStateSnapshot(data);
     isInitialized = true;
     editor.setEditable(true);
     console.log("Client initialized.");
-    updateEditorContent();
-  } else if (type === "event") {
-    if (data.replicaId !== doc.egWalker.getReplicaId()) {
-      if (isInitialized) {
-        doc.egWalker.integrateRemote([data]);
-        updateEditorContent();
-      } else {
-        console.warn("Ignoring event received before initialization.");
-      }
-    }
   }
-
-  setTimeout(() => {
-    isApplyingRemoteChanges = false;
-  }, 0);
-};
+  updateEditorContent();
+});
 
 ws.onclose = () => {
   console.log("Disconnected from server");
@@ -143,7 +129,7 @@ function updateEditorContent() {
 }
 
 editor.on("update", () => {
-  if (!isInitialized || isApplyingRemoteChanges) {
+  if (!isInitialized || client.isApplyingRemoteChanges()) {
     return;
   }
 
@@ -185,18 +171,12 @@ editor.on("update", () => {
     console.log(
       `Deleting ${deletedLength} chars from ${start}: "${deletedContent}"`,
     );
-    const event = doc.localDelete(["content"], start, deletedLength);
-    if (event) {
-      ws.send(JSON.stringify(event));
-    }
+    doc.localDelete(["content"], start, deletedLength);
   }
 
   const insertedText = newHtml.substring(start, newEnd);
   if (insertedText.length > 0) {
     console.log(`Inserting at ${start}: "${insertedText}"`);
-    const event = doc.localInsert(["content"], start, insertedText.split(""));
-    if (event) {
-      ws.send(JSON.stringify(event));
-    }
+    doc.localInsert(["content"], start, insertedText.split(""));
   }
 });

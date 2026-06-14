@@ -1,4 +1,4 @@
-import { CrdtEvent, Doc } from "@ddgll/ts-crdt";
+import { CrdtEvent, Doc, ServerMessage, ClientMessage } from "@ddgll/ts-crdt";
 
 /**
  * Interface representing a repository to persist and load CRDT events.
@@ -88,12 +88,13 @@ export class CrdtServer {
 
     // Send state snapshot to the newly connected client
     const snapshot = this.doc.egWalker.getStateSnapshot();
-    socket.send(JSON.stringify({ type: "snapshot", data: snapshot }));
+    const snapshotMsg: ServerMessage = { type: "snapshot", data: snapshot };
+    socket.send(JSON.stringify(snapshotMsg));
 
     socket.on("message", async (data: unknown) => {
       try {
         const messageString = typeof data === "string" ? data : String(data);
-        const event: CrdtEvent = JSON.parse(messageString);
+        const event: ClientMessage = JSON.parse(messageString);
 
         // Persist the event first
         await this.repository.saveEvent(event);
@@ -102,10 +103,11 @@ export class CrdtServer {
         this.doc.egWalker.integrateRemote([event]);
 
         // Broadcast to all clients
-        const broadcastMsg = JSON.stringify({ type: "event", data: event });
+        const broadcastMsg: ServerMessage = { type: "event", data: event };
+        const broadcastMsgString = JSON.stringify(broadcastMsg);
         for (const client of this.sockets) {
           if (client.readyState === 1) { // OPEN
-            client.send(broadcastMsg);
+            client.send(broadcastMsgString);
           }
         }
       } catch (err) {
