@@ -6,6 +6,7 @@ import { drizzle } from "drizzle-orm/libsql";
 import { createClient } from "@libsql/client";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { handleWebSocket, resetServer, Repository } from "@ddgll/ts-crdt-server";
+import { eq } from "drizzle-orm";
 import * as schema from "./db/schema.js";
 
 const app = new Hono();
@@ -13,17 +14,35 @@ const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 
 const db = drizzle(createClient({ url: "file:sqlite.db" }), { schema });
 
-const repository: Repository = {
-  getEvents: async () => {
-    return await db.query.events.findMany();
-  },
-  saveEvent: async (event) => {
-    await db.insert(schema.events).values(event);
-  },
-  clearEvents: async () => {
-    await db.delete(schema.events);
-  },
-};
+const repositories = new Map<string, Repository>();
+
+function getRoomRepository(roomId: string): Repository {
+  let repo = repositories.get(roomId);
+  if (!repo) {
+    repo = {
+      getEvents: async () => {
+        return await db
+          .select()
+          .from(schema.events)
+          .where(eq(schema.events.roomId, roomId));
+      },
+      saveEvent: async (event) => {
+        await db.insert(schema.events).values({
+          id: event.id,
+          roomId,
+          replicaId: event.replicaId,
+          parents: event.parents,
+          op: event.op,
+        });
+      },
+      clearEvents: async () => {
+        await db.delete(schema.events).where(eq(schema.events.roomId, roomId));
+      },
+    };
+    repositories.set(roomId, repo);
+  }
+  return repo;
+}
 
 async function initializeServer() {
   console.log("Running migrations...");
@@ -32,14 +51,16 @@ async function initializeServer() {
 
   app.get(
     "/ws",
-    upgradeWebSocket(() => {
+    upgradeWebSocket((c) => {
+      const roomId = c.req.query("room") || "default";
+      const roomRepository = getRoomRepository(roomId);
       return {
         onOpen: (_evt, webSocket) => {
           if (!webSocket.raw) {
             console.error("WebSocket is undefined");
             return;
           }
-          handleWebSocket(webSocket.raw as any, repository).catch((err) => {
+          handleWebSocket(webSocket.raw as any, roomRepository).catch((err) => {
             console.error("WebSocket handling error:", err);
           });
         },
@@ -48,9 +69,11 @@ async function initializeServer() {
   );
 
   app.get("/reset", async (c) => {
-    await resetServer(repository);
-    console.log("State and database reset");
-    return c.text("State and database reset");
+    const roomId = c.req.query("room") || "default";
+    const roomRepository = getRoomRepository(roomId);
+    await resetServer(roomRepository);
+    console.log(`State and database reset for room ${roomId}`);
+    return c.text(`State and database reset for room ${roomId}`);
   });
 
   // Serve static files AFTER the WebSocket route

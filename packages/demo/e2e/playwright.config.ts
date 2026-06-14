@@ -9,7 +9,6 @@ export default defineConfig({
     globalTeardown: __dirname + "/global-teardown.ts",
 
     testDir: ".",
-    workers: 1,
     use: {
         baseURL: "http://localhost:3000",
     },

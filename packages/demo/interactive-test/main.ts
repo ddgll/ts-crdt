@@ -9,7 +9,10 @@ let isInitialized = false;
 // Disable the textarea until the client is initialized
 textarea.disabled = true;
 
-const ws = new WebSocket("ws://localhost:3000/ws");
+const urlParams = new URLSearchParams(window.location.search);
+const room = urlParams.get("room") || "default";
+const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const ws = new WebSocket(`${protocol}//${window.location.host}/ws?room=${room}`);
 
 ws.onopen = () => {
   console.log("Connected to server");

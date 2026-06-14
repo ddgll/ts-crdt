@@ -4,10 +4,10 @@ import { promisify } from "util";
 const sleep = promisify(setTimeout);
 
 test.describe("Multi-User Collaborative Text Editing", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.request.get("http://localhost:3000/reset");
-  });
-  test("should sync text between three clients", async ({ browser }) => {
+  test("should sync text between three clients", async ({ browser, request }) => {
+    const roomId = `room-${crypto.randomUUID()}`;
+    await request.get(`http://localhost:3000/reset?room=${roomId}`);
+
     const context1 = await browser.newContext();
     const page1 = await context1.newPage();
     const context2 = await browser.newContext();
@@ -15,9 +15,9 @@ test.describe("Multi-User Collaborative Text Editing", () => {
     const context3 = await browser.newContext();
     const page3 = await context3.newPage();
 
-    await page1.goto("http://localhost:3000");
-    await page2.goto("http://localhost:3000");
-    await page3.goto("http://localhost:3000");
+    await page1.goto(`http://localhost:3000?room=${roomId}`);
+    await page2.goto(`http://localhost:3000?room=${roomId}`);
+    await page3.goto(`http://localhost:3000?room=${roomId}`);
 
     await page1.waitForSelector("#user1");
     await page2.waitForSelector("#user1");
@@ -53,14 +53,18 @@ test.describe("Multi-User Collaborative Text Editing", () => {
 
   test("should sync text correctly when a client reconnects after being offline", async ({
     browser,
+    request,
   }) => {
+    const roomId = `room-${crypto.randomUUID()}`;
+    await request.get(`http://localhost:3000/reset?room=${roomId}`);
+
     const context1 = await browser.newContext();
     const page1 = await context1.newPage();
     const context2 = await browser.newContext();
     const page2 = await context2.newPage();
 
-    await page1.goto("http://localhost:3000");
-    await page2.goto("http://localhost:3000");
+    await page1.goto(`http://localhost:3000?room=${roomId}`);
+    await page2.goto(`http://localhost:3000?room=${roomId}`);
 
     await page1.waitForSelector("#user1");
     await page2.waitForSelector("#user1");

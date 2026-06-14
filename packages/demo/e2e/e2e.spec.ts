@@ -1,17 +1,17 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("Collaborative Text Editing", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.request.get("http://localhost:3000/reset");
-  });
-  test("should sync text between two clients", async ({ browser }) => {
+  test("should sync text between two clients", async ({ browser, request }) => {
+    const roomId = `room-${crypto.randomUUID()}`;
+    await request.get(`http://localhost:3000/reset?room=${roomId}`);
+
     const context1 = await browser.newContext();
     const page1 = await context1.newPage();
     const context2 = await browser.newContext();
     const page2 = await context2.newPage();
 
-    await page1.goto("http://localhost:3000");
-    await page2.goto("http://localhost:3000");
+    await page1.goto(`http://localhost:3000?room=${roomId}`);
+    await page2.goto(`http://localhost:3000?room=${roomId}`);
 
     await page1.waitForSelector("#user1");
     await page2.waitForSelector("#user1");
