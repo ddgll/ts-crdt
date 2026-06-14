@@ -1,4 +1,4 @@
-import { Doc, ServerMessage } from "@ddgll/ts-crdt";
+import { Doc, ServerMessage, YArray, YText, YMap } from "@ddgll/ts-crdt";
 
 /**
  * Minimal WebSocket interface required by CrdtClient.
@@ -118,5 +118,100 @@ export class CrdtClient {
    */
   getDoc(): Doc {
     return this.doc;
+  }
+
+  /**
+   * Resolves the CRDT instance at the given path starting from the root map.
+   */
+  private resolvePath(path: (string | number)[]): unknown {
+    let current: unknown = this.doc.getMap();
+    for (const segment of path) {
+      if (current instanceof YMap) {
+        current = current.get(segment as string);
+      } else if (current instanceof YArray) {
+        current = current.get(segment as number);
+      } else {
+        return undefined;
+      }
+    }
+    return current;
+  }
+
+  /**
+   * Synchronizes a local string value with a collaborative text container (either YArray of characters or YText)
+   * at the specified path. It calculates the minimal set of delete and insert operations and applies them.
+   * 
+   * @param path The path of the target container in the document.
+   * @param newText The new text value to synchronize.
+   * @param type Optional preference for the container type ("array" | "text") if it doesn't exist yet. Defaults to "array".
+   */
+  syncText(path: (string | number)[], newText: string, type: "array" | "text" = "array"): void {
+    const target = this.resolvePath(path);
+    
+    let oldText = "";
+    let isTextOp = type === "text";
+
+    if (target instanceof YText) {
+      oldText = target.toString();
+      isTextOp = true;
+    } else if (target instanceof YArray) {
+      oldText = target.toJSON().map(item => typeof item === "string" ? item : "").join("");
+      isTextOp = false;
+    }
+
+    if (newText === oldText) {
+      return;
+    }
+
+    let start = 0;
+    while (
+      start < oldText.length &&
+      start < newText.length &&
+      oldText[start] === newText[start]
+    ) {
+      start++;
+    }
+
+    let oldEnd = oldText.length;
+    let newEnd = newText.length;
+    while (
+      oldEnd > start &&
+      newEnd > start &&
+      oldEnd <= oldText.length &&
+      newEnd <= newText.length &&
+      oldText[oldEnd - 1] === newText[newEnd - 1]
+    ) {
+      oldEnd--;
+      newEnd--;
+    }
+
+    const deletedLength = oldEnd - start;
+    const insertedText = newText.substring(start, newEnd);
+
+    if (isTextOp) {
+      if (deletedLength > 0) {
+        this.doc.egWalker.localOp({
+          type: "text-delete",
+          path,
+          index: start,
+          length: deletedLength,
+        });
+      }
+      if (insertedText.length > 0) {
+        this.doc.egWalker.localOp({
+          type: "text-insert",
+          path,
+          index: start,
+          text: insertedText,
+        });
+      }
+    } else {
+      if (deletedLength > 0) {
+        this.doc.localDelete(path, start, deletedLength);
+      }
+      if (insertedText.length > 0) {
+        this.doc.localInsert(path, start, insertedText.split(""));
+      }
+    }
   }
 }

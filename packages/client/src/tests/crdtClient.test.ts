@@ -133,4 +133,48 @@ describe("CrdtClient", () => {
 
     client.unbind();
   });
+
+  describe("syncText", () => {
+    it("should sync text to a YArray (character array) container", () => {
+      const doc = new Doc("client-replica");
+      const client = new CrdtClient(doc);
+
+      // 1. Initial sync (inserts all characters)
+      client.syncText(["content"], "hello");
+      const array = doc.getMap().getArray("content");
+      expect(array.toJSON().join("")).toBe("hello");
+
+      // 2. Sync with change (diff update: replaces 'o' with 'a')
+      const versionBefore = doc.egWalker.getVersion();
+      client.syncText(["content"], "hella");
+      expect(array.toJSON().join("")).toBe("hella");
+      expect(doc.egWalker.getVersion()).not.toEqual(versionBefore);
+
+      // 3. Sync with no changes
+      const versionAfter = doc.egWalker.getVersion();
+      client.syncText(["content"], "hella");
+      expect(doc.egWalker.getVersion()).toEqual(versionAfter);
+    });
+
+    it("should sync text to a YText container", () => {
+      const doc = new Doc("client-replica");
+      const client = new CrdtClient(doc);
+
+      // 1. Initial sync (inserts text)
+      client.syncText(["text-content"], "world", "text");
+      const text = doc.getMap().getText("text-content");
+      expect(text.toString()).toBe("world");
+
+      // 2. Sync with change (replaces 'world' with 'word')
+      const versionBefore = doc.egWalker.getVersion();
+      client.syncText(["text-content"], "word", "text");
+      expect(text.toString()).toBe("word");
+      expect(doc.egWalker.getVersion()).not.toEqual(versionBefore);
+
+      // 3. Sync with no changes
+      const versionAfter = doc.egWalker.getVersion();
+      client.syncText(["text-content"], "word", "text");
+      expect(doc.egWalker.getVersion()).toEqual(versionAfter);
+    });
+  });
 });

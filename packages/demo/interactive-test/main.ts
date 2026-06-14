@@ -58,40 +58,5 @@ textarea.addEventListener("input", () => {
     return;
   }
 
-  const newText = textarea.value;
-  const oldText = (doc.getMap().getArray("content")?.toJSON() ?? []).join("");
-
-  if (newText === oldText) {
-    return;
-  }
-
-  let start = 0;
-  while (
-    start < oldText.length &&
-    start < newText.length &&
-    oldText[start] === newText[start]
-  ) {
-    start++;
-  }
-
-  let oldEnd = oldText.length;
-  let newEnd = newText.length;
-  while (
-    oldEnd > start &&
-    newEnd > start &&
-    oldText[oldEnd - 1] === newText[newEnd - 1]
-  ) {
-    oldEnd--;
-    newEnd--;
-  }
-
-  const deletedLength = oldEnd - start;
-  if (deletedLength > 0) {
-    doc.localDelete(["content"], start, deletedLength);
-  }
-
-  const insertedText = newText.substring(start, newEnd);
-  if (insertedText.length > 0) {
-    doc.localInsert(["content"], start, insertedText.split(""));
-  }
+  client.syncText(["content"], textarea.value);
 });

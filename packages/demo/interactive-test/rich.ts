@@ -133,50 +133,5 @@ editor.on("update", () => {
     return;
   }
 
-  const newHtml = editor.getHTML();
-  const oldHtml = (doc.getMap().getArray("content")?.toJSON() ?? []).join("");
-
-  if (newHtml === oldHtml) {
-    return;
-  }
-
-  console.log("Old HTML:", oldHtml);
-  console.log("New HTML:", newHtml);
-
-  let start = 0;
-  while (
-    start < oldHtml.length &&
-    start < newHtml.length &&
-    oldHtml[start] === newHtml[start]
-  ) {
-    start++;
-  }
-
-  let oldEnd = oldHtml.length;
-  let newEnd = newHtml.length;
-  while (
-    oldEnd > start &&
-    newEnd > start &&
-    oldEnd <= oldHtml.length && // boundary checks
-    newEnd <= newHtml.length && // boundary checks
-    oldHtml[oldEnd - 1] === newHtml[newEnd - 1]
-  ) {
-    oldEnd--;
-    newEnd--;
-  }
-
-  const deletedLength = oldEnd - start;
-  if (deletedLength > 0) {
-    const deletedContent = oldHtml.substring(start, oldEnd);
-    console.log(
-      `Deleting ${deletedLength} chars from ${start}: "${deletedContent}"`,
-    );
-    doc.localDelete(["content"], start, deletedLength);
-  }
-
-  const insertedText = newHtml.substring(start, newEnd);
-  if (insertedText.length > 0) {
-    console.log(`Inserting at ${start}: "${insertedText}"`);
-    doc.localInsert(["content"], start, insertedText.split(""));
-  }
+  client.syncText(["content"], editor.getHTML());
 });
