@@ -107,6 +107,36 @@ describe("CrdtServer", () => {
     expect(parsedEvent.type).toBe("event");
     expect(parsedEvent.data.id).toBe(dummyEvent!.id);
   });
+
+  it("should not double-apply events on re-initialization after all clients disconnect", async () => {
+    const repo = new MockRepository();
+    const server = new CrdtServer("default-room", repo);
+    await server.initialize();
+
+    const ws1 = new MockWebSocket();
+    await server.handleConnection(ws1);
+
+    // Make an edit
+    const localDoc = server.getDoc();
+    const dummyEvent = localDoc.localInsert(["content"], 0, ["a"]);
+    ws1.emit("message", JSON.stringify(dummyEvent));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(server.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
+    expect(repo.events.length).toBe(2); // init event + "a"
+
+    // Disconnect all clients
+    ws1.emit("close");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Connect new client, triggering re-initialization
+    const ws2 = new MockWebSocket();
+    await server.handleConnection(ws2);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // State should remain ["a"], not ["a", "a"]
+    expect(server.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
+  });
 });
 
 describe("Clustered execution via InMemoryPubSubAdapter", () => {

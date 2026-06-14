@@ -62,8 +62,7 @@ async function initializeServer() {
 
   app.get("/reset", async (c) => {
     const roomId = c.req.query("room") || "default";
-    const roomRepository = getRoomRepository(roomId);
-    await resetServer(roomRepository);
+    await resetServer(roomId);
     console.log(`State and database reset for room ${roomId}`);
     return c.text(`State and database reset for room ${roomId}`);
   });
@@ -89,8 +88,7 @@ async function initializeServer() {
 
   app.get("/reset-text", async (c) => {
     const roomId = c.req.query("room") || "default";
-    const roomRepository = getTextDbRoomRepository(roomId);
-    await resetServer(roomRepository);
+    await resetServer(roomId);
     console.log(`Text-DB state and database reset for room ${roomId}`);
     return c.text(`Text-DB state and database reset for room ${roomId}`);
   });

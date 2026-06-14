@@ -9,6 +9,12 @@ import {
 /**
  * A collaborative array that can be modified by multiple replicas.
  * It supports insertion, deletion, and replacement of elements.
+ * 
+ * **Note on Concurrency**: YArray resolves concurrent index-based operations
+ * via deterministic event replay. It does not use unique item IDs. Concurrent 
+ * inserts at the same index will converge deterministically, but it is not 
+ * recommended for real-time character-level text editing. Use `YText` or 
+ * `ARRAY_REPLACE_OP` for text.
  */
 export class YArray {
 	private _doc: Doc;

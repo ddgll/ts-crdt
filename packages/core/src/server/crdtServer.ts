@@ -73,6 +73,7 @@ export class CrdtServer {
     if (this.initializingPromise) return this.initializingPromise;
 
     this.initializingPromise = (async () => {
+      this.doc.clear(); // Reset document to avoid double-application on re-init
       const events = await this.repository.getEvents();
       if (events.length > 0) {
         console.log(`Loading ${events.length} events from the repository.`);
@@ -220,8 +221,8 @@ export class CrdtServer {
   }
 }
 
-// Global WeakMap to store server instances mapped to their repositories
-const serverInstances = new WeakMap<Repository, CrdtServer>();
+// Global Map to store server instances mapped to their roomId
+const serverInstances = new Map<string, CrdtServer>();
 
 /**
  * Exposes a helper function that takes the socket and the repository in parameters
@@ -233,19 +234,19 @@ export async function handleWebSocket(
   repository: Repository,
   options?: CrdtServerOptions
 ): Promise<void> {
-  let server = serverInstances.get(repository);
+  let server = serverInstances.get(roomId);
   if (!server) {
     server = new CrdtServer(roomId, repository, options);
-    serverInstances.set(repository, server);
+    serverInstances.set(roomId, server);
   }
   await server.handleConnection(socket);
 }
 
 /**
- * Resets the server instance associated with the given repository.
+ * Resets the server instance associated with the given roomId.
  */
-export async function resetServer(repository: Repository): Promise<void> {
-  const server = serverInstances.get(repository);
+export async function resetServer(roomId: string): Promise<void> {
+  const server = serverInstances.get(roomId);
   if (server) {
     await server.reset();
   }

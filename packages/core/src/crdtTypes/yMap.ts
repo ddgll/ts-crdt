@@ -162,6 +162,12 @@ export class YMap {
 			const existingValue = this._map.get(key);
 			if (existingValue instanceof YMap && value instanceof YMap) {
 				existingValue.merge(value);
+			} else if (value instanceof YMap) {
+				this.set(key, YMap.fromJSON(this._doc, [...this._path, key], value.toJSON()));
+			} else if (value instanceof YArray) {
+				this.set(key, YArray.fromJSON(this._doc, [...this._path, key], value.toJSON()));
+			} else if (value instanceof YText) {
+				this.set(key, YText.fromString(this._doc, [...this._path, key], value.toString()));
 			} else {
 				this.set(key, value);
 			}
