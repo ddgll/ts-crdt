@@ -14,14 +14,20 @@ export class SqliteRoomRepository implements Repository {
       .where(eq(schema.events.roomId, this.roomId));
   }
 
-  async saveEvent(event: CrdtEvent): Promise<void> {
-    await db.insert(schema.events).values({
-      id: event.id,
-      roomId: this.roomId,
-      replicaId: event.replicaId,
-      parents: event.parents,
-      op: event.op,
-    });
+  async saveEvents(events: CrdtEvent[]): Promise<void> {
+    if (events.length === 0) return;
+    await db
+      .insert(schema.events)
+      .values(
+        events.map((event) => ({
+          id: event.id,
+          roomId: this.roomId,
+          replicaId: event.replicaId,
+          parents: event.parents,
+          op: event.op,
+        }))
+      )
+      .onConflictDoNothing();
   }
 
   async clearEvents(): Promise<void> {

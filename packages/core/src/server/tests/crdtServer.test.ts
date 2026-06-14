@@ -1,20 +1,28 @@
 import { describe, it, expect } from "vitest";
 import { CrdtServer, Repository, MinimalWebSocket } from "../crdtServer.js";
-import { CrdtEvent } from "../index.js";
+import { InMemoryPubSubAdapter } from "../pubSubAdapter.js";
+import { CrdtEvent } from "../../index.js";
 
 class MockRepository implements Repository {
   events: CrdtEvent[] = [];
+  saveEventsCalls = 0;
+  shouldFail = false;
 
   async getEvents(): Promise<CrdtEvent[]> {
     return this.events;
   }
 
-  async saveEvent(event: CrdtEvent): Promise<void> {
-    this.events.push(event);
+  async saveEvents(events: CrdtEvent[]): Promise<void> {
+    if (this.shouldFail) {
+      throw new Error("Simulated database write error");
+    }
+    this.saveEventsCalls++;
+    this.events.push(...events);
   }
 
   async clearEvents(): Promise<void> {
     this.events = [];
+    this.saveEventsCalls = 0;
   }
 }
 
@@ -60,7 +68,7 @@ class MockWebSocket implements MinimalWebSocket {
 describe("CrdtServer", () => {
   it("should initialize the document with an initial event if repository is empty", async () => {
     const repo = new MockRepository();
-    const server = new CrdtServer(repo);
+    const server = new CrdtServer("default-room", repo);
 
     await server.initialize();
 
@@ -70,7 +78,7 @@ describe("CrdtServer", () => {
 
   it("should handle connections and broadcast events", async () => {
     const repo = new MockRepository();
-    const server = new CrdtServer(repo);
+    const server = new CrdtServer("default-room", repo);
     await server.initialize();
 
     const ws1 = new MockWebSocket();
@@ -98,5 +106,50 @@ describe("CrdtServer", () => {
     const parsedEvent = JSON.parse(ws2.sentData[1]);
     expect(parsedEvent.type).toBe("event");
     expect(parsedEvent.data.id).toBe(dummyEvent!.id);
+  });
+});
+
+describe("Clustered execution via InMemoryPubSubAdapter", () => {
+  it("should synchronize state between multiple CrdtServer instances", async () => {
+    const pubSub = new InMemoryPubSubAdapter();
+
+    const repo1 = new MockRepository();
+    const repo2 = new MockRepository();
+
+    const server1 = new CrdtServer("shared-room", repo1, { pubSub });
+    await server1.initialize();
+
+    // Copy initial events from repo1 to repo2 to simulate a shared DB boot state
+    repo2.events = [...repo1.events];
+
+    const server2 = new CrdtServer("shared-room", repo2, { pubSub });
+    await server2.initialize();
+
+    const ws1 = new MockWebSocket();
+    const ws2 = new MockWebSocket();
+
+    await server1.handleConnection(ws1);
+    await server2.handleConnection(ws2);
+
+    // Initial snapshots sent
+    expect(ws1.sentData.length).toBe(1);
+    expect(ws2.sentData.length).toBe(1);
+
+    // Send local edit on server1
+    const dummyEvent = server1.getDoc().localInsert(["content"], 0, ["a"]);
+    ws1.emit("message", JSON.stringify(dummyEvent));
+
+    // Wait for microtasks (to let pubsub broadcast and async events settle)
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // WS2 on Server2 should have received the event broadcasted from Server1 via PubSub
+    expect(ws2.sentData.length).toBe(2);
+    const parsedEvent = JSON.parse(ws2.sentData[1]);
+    expect(parsedEvent.type).toBe("event");
+    expect(parsedEvent.data.id).toBe(dummyEvent!.id);
+
+    // Doc states on both servers must converge
+    expect(server1.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
+    expect(server2.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
   });
 });

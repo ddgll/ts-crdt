@@ -3,7 +3,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { handleWebSocket, resetServer, Repository } from "@ddgll/ts-crdt/server";
+import { handleWebSocket, resetServer, Repository, BufferedRepository, InMemoryPubSubAdapter } from "@ddgll/ts-crdt/server";
 import { db } from "./db.js";
 import { SqliteRoomRepository } from "./roomRepository.js";
 import { InMemoryTextRepository } from "./inMemoryTextRepository.js";
@@ -13,11 +13,13 @@ const { upgradeWebSocket, injectWebSocket } = createNodeWebSocket({ app });
 
 const sqliteRepositories = new Map<string, Repository>();
 const textRepositories = new Map<string, Repository>();
+const pubSub = new InMemoryPubSubAdapter();
 
 function getRoomRepository(roomId: string): Repository {
   let repo = sqliteRepositories.get(roomId);
   if (!repo) {
-    repo = new SqliteRoomRepository(roomId);
+    const rawRepo = new SqliteRoomRepository(roomId);
+    repo = new BufferedRepository(rawRepo, { flushIntervalMs: 500, batchSize: 20 });
     sqliteRepositories.set(roomId, repo);
   }
   return repo;
@@ -26,7 +28,8 @@ function getRoomRepository(roomId: string): Repository {
 function getTextDbRoomRepository(roomId: string): Repository {
   let repo = textRepositories.get(roomId);
   if (!repo) {
-    repo = new InMemoryTextRepository(roomId);
+    const rawRepo = new InMemoryTextRepository(roomId);
+    repo = new BufferedRepository(rawRepo, { flushIntervalMs: 1000, batchSize: 5 });
     textRepositories.set(roomId, repo);
   }
   return repo;
@@ -49,7 +52,7 @@ async function initializeServer() {
             console.error("WebSocket is undefined");
             return;
           }
-          handleWebSocket(webSocket.raw, roomRepository).catch((err) => {
+          handleWebSocket(webSocket.raw, roomId, roomRepository, { pubSub }).catch((err) => {
             console.error("WebSocket handling error:", err);
           });
         },
@@ -76,7 +79,7 @@ async function initializeServer() {
             console.error("WebSocket is undefined");
             return;
           }
-          handleWebSocket(webSocket.raw, roomRepository).catch((err) => {
+          handleWebSocket(webSocket.raw, roomId, roomRepository, { pubSub }).catch((err) => {
             console.error("WebSocket handling error:", err);
           });
         },

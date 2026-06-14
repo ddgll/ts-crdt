@@ -37,12 +37,13 @@ export class InMemoryTextRepository implements Repository {
     return Array.from(this.doc.egWalker.graph.events.values());
   }
 
-  async saveEvent(event: CrdtEvent): Promise<void> {
+  async saveEvents(events: CrdtEvent[]): Promise<void> {
+    if (events.length === 0) return;
     if (!this.initialized) {
       await this.getEvents();
     }
 
-    this.doc.egWalker.integrateRemote([event]);
+    this.doc.egWalker.integrateRemote(events);
 
     const content = this.doc.getMap().getArray("content");
     const text = content ? content.toJSON().join("") : "";

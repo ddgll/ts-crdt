@@ -1,4 +1,5 @@
-import { CrdtEvent, Doc, ServerMessage, ClientMessage } from "./index.js";
+import { CrdtEvent, Doc, ServerMessage, ClientMessage } from "../index.js";
+import { PubSubAdapter } from "./pubSubAdapter.js";
 
 /**
  * Interface representing a repository to persist and load CRDT events.
@@ -10,15 +11,20 @@ export interface Repository {
   getEvents(): Promise<CrdtEvent[]>;
 
   /**
-   * Saves a new event to the repository.
-   * @param event The CRDT event to save.
+   * Saves CRDT events to the repository.
+   * @param events The CRDT events to save.
    */
-  saveEvent(event: CrdtEvent): Promise<void>;
+  saveEvents(events: CrdtEvent[]): Promise<void>;
 
   /**
    * Optional helper method to clear all events (useful for resetting document state).
    */
   clearEvents?(): Promise<void>;
+
+  /**
+   * Optional helper method to flush any buffered events.
+   */
+  flush?(): Promise<void>;
 }
 
 /**
@@ -33,6 +39,10 @@ export interface MinimalWebSocket {
   on(event: "error", cb: (err: unknown) => void): void;
 }
 
+export interface CrdtServerOptions {
+  pubSub?: PubSubAdapter;
+}
+
 /**
  * CrdtServer manages a single collaborative document, its connected clients,
  * and replicates CRDT events across them with persistence through a Repository.
@@ -43,10 +53,15 @@ export class CrdtServer {
   private sockets = new Set<MinimalWebSocket>();
   private initialized = false;
   private initializingPromise: Promise<void> | null = null;
+  private roomId: string;
+  private pubSub?: PubSubAdapter;
+  private unsubscribeFromPubSub: (() => void) | null = null;
 
-  constructor(repository: Repository) {
+  constructor(roomId: string, repository: Repository, options?: CrdtServerOptions) {
     this.doc = new Doc();
+    this.roomId = roomId;
     this.repository = repository;
+    this.pubSub = options?.pubSub;
   }
 
   /**
@@ -68,9 +83,27 @@ export class CrdtServer {
         console.log("No existing events. Initializing new document.");
         const event = this.doc.localInsert(["content"], 0, []);
         if (event) {
-          await this.repository.saveEvent(event);
+          await this.repository.saveEvents([event]);
         }
       }
+
+      // If a PubSub adapter is configured, subscribe to events for this room
+      if (this.pubSub) {
+        this.unsubscribeFromPubSub = await this.pubSub.subscribe(this.roomId, (event) => {
+          // Integrate the event received from the cluster
+          this.doc.egWalker.integrateRemote([event]);
+
+          // Broadcast to all locally connected sockets
+          const broadcastMsg: ServerMessage = { type: "event", data: event };
+          const broadcastMsgString = JSON.stringify(broadcastMsg);
+          for (const client of this.sockets) {
+            if (client.readyState === 1) { // OPEN
+              client.send(broadcastMsgString);
+            }
+          }
+        });
+      }
+
       this.initialized = true;
     })();
 
@@ -96,18 +129,23 @@ export class CrdtServer {
         const messageString = typeof data === "string" ? data : String(data);
         const event: ClientMessage = JSON.parse(messageString);
 
-        // Persist the event first
-        await this.repository.saveEvent(event);
+        // Persist the event first using repository
+        await this.repository.saveEvents([event]);
 
-        // Integrate the event into the local document
-        this.doc.egWalker.integrateRemote([event]);
+        // Publish to cluster if adapter is present, otherwise integrate and broadcast locally
+        if (this.pubSub) {
+          await this.pubSub.publish(this.roomId, event);
+        } else {
+          // Standalone mode: integrate locally
+          this.doc.egWalker.integrateRemote([event]);
 
-        // Broadcast to all clients
-        const broadcastMsg: ServerMessage = { type: "event", data: event };
-        const broadcastMsgString = JSON.stringify(broadcastMsg);
-        for (const client of this.sockets) {
-          if (client.readyState === 1) { // OPEN
-            client.send(broadcastMsgString);
+          // Standalone mode: broadcast to all local clients
+          const broadcastMsg: ServerMessage = { type: "event", data: event };
+          const broadcastMsgString = JSON.stringify(broadcastMsg);
+          for (const client of this.sockets) {
+            if (client.readyState === 1) { // OPEN
+              client.send(broadcastMsgString);
+            }
           }
         }
       } catch (err) {
@@ -115,8 +153,27 @@ export class CrdtServer {
       }
     });
 
-    const cleanup = () => {
+    const cleanup = async () => {
       this.sockets.delete(socket);
+      if (this.sockets.size === 0) {
+        // Safe flush of buffered repository if it supports it
+        if (typeof this.repository.flush === "function") {
+          try {
+            await this.repository.flush();
+          } catch (err) {
+            console.error("Failed to flush repository on connection cleanup:", err);
+          }
+        }
+
+        // Unsubscribe from Pub/Sub
+        if (this.unsubscribeFromPubSub) {
+          this.unsubscribeFromPubSub();
+          this.unsubscribeFromPubSub = null;
+        }
+
+        this.initialized = false;
+        this.initializingPromise = null;
+      }
     };
 
     socket.on("close", cleanup);
@@ -133,13 +190,18 @@ export class CrdtServer {
     this.doc = new Doc();
     this.sockets.clear();
     
+    if (this.unsubscribeFromPubSub) {
+      this.unsubscribeFromPubSub();
+      this.unsubscribeFromPubSub = null;
+    }
+
     if (this.repository.clearEvents) {
       await this.repository.clearEvents();
     }
 
     const event = this.doc.localInsert(["content"], 0, []);
     if (event) {
-      await this.repository.saveEvent(event);
+      await this.repository.saveEvents([event]);
     }
   }
 
@@ -165,10 +227,15 @@ const serverInstances = new WeakMap<Repository, CrdtServer>();
  * Exposes a helper function that takes the socket and the repository in parameters
  * and handles WebSocket synchronization, persistence, and broadcasting.
  */
-export async function handleWebSocket(socket: MinimalWebSocket, repository: Repository): Promise<void> {
+export async function handleWebSocket(
+  socket: MinimalWebSocket,
+  roomId: string,
+  repository: Repository,
+  options?: CrdtServerOptions
+): Promise<void> {
   let server = serverInstances.get(repository);
   if (!server) {
-    server = new CrdtServer(repository);
+    server = new CrdtServer(roomId, repository, options);
     serverInstances.set(repository, server);
   }
   await server.handleConnection(socket);
