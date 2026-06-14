@@ -60,7 +60,7 @@ async function initializeServer() {
             console.error("WebSocket is undefined");
             return;
           }
-          handleWebSocket(webSocket.raw as any, roomRepository).catch((err) => {
+          handleWebSocket(webSocket.raw, roomRepository).catch((err) => {
             console.error("WebSocket handling error:", err);
           });
         },
