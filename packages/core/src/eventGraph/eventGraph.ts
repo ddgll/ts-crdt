@@ -391,32 +391,49 @@ export function createEventGraph() {
 		const existingEvents = eventsToSort.filter((e) => events.has(e.id));
 		const eventMap = new Map(existingEvents.map((e) => [e.id, e]));
 		const visited = new Set<EventID>();
+		const inStack = new Set<EventID>();
 		const sorted: CrdtEvent[] = [];
-
-		function visit(event: CrdtEvent) {
-			if (visited.has(event.id)) {
-				return;
-			}
-			visited.add(event.id);
-
-			// Sort parents by ID for deterministic traversal order
-			const sortedParents = [...event.parents].sort();
-			for (const parentId of sortedParents) {
-				const parentEvent = eventMap.get(parentId);
-				if (parentEvent) {
-					visit(parentEvent);
-				}
-			}
-			sorted.push(event);
-		}
 
 		// Sort events by ID for deterministic iteration — ensures concurrent
 		// events are always applied in the same order across all replicas.
 		const sortedExisting = [...existingEvents].sort((a, b) =>
 			a.id.localeCompare(b.id)
 		);
-		for (const event of sortedExisting) {
-			visit(event);
+
+		for (const rootEvent of sortedExisting) {
+			if (visited.has(rootEvent.id)) continue;
+
+			const stack: { event: CrdtEvent; parents: EventID[]; parentIndex: number }[] = [];
+			stack.push({
+				event: rootEvent,
+				parents: [...rootEvent.parents].sort(),
+				parentIndex: 0
+			});
+			inStack.add(rootEvent.id);
+
+			while (stack.length > 0) {
+				const current = stack[stack.length - 1];
+
+				if (current.parentIndex < current.parents.length) {
+					const parentId = current.parents[current.parentIndex];
+					current.parentIndex++;
+
+					const parentEvent = eventMap.get(parentId);
+					if (parentEvent && !visited.has(parentEvent.id) && !inStack.has(parentEvent.id)) {
+						stack.push({
+							event: parentEvent,
+							parents: [...parentEvent.parents].sort(),
+							parentIndex: 0
+						});
+						inStack.add(parentEvent.id);
+					}
+				} else {
+					const finished = stack.pop()!;
+					inStack.delete(finished.event.id);
+					visited.add(finished.event.id);
+					sorted.push(finished.event);
+				}
+			}
 		}
 
 		return sorted;

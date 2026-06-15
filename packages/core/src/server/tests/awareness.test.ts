@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { CrdtServer } from "../crdtServer.js";
 
-type EventListener = (event: string, cb: unknown) => void;
+type EventListener = (data: unknown) => void;
 
 // Mock minimal websocket
 class MockWebSocket {
@@ -24,7 +24,7 @@ class MockWebSocket {
 
   trigger(event: string, data?: unknown) {
     if (this.listeners[event]) {
-      this.listeners[event].forEach((cb) => cb(event, data));
+      this.listeners[event].forEach((cb) => cb(data));
     }
   }
 }
