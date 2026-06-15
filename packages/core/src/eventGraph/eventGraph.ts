@@ -5,6 +5,8 @@ export type EventID = string;
 
 /** Constant for map set operations. */
 export const MAP_SET_OP = "map-set";
+/** Constant for map delete operations. */
+export const MAP_DELETE_OP = "map-delete";
 /** Constant for array insert operations. */
 export const ARRAY_INSERT_OP = "array-insert";
 /** Constant for array delete operations. */
@@ -17,6 +19,8 @@ export const TEXT_INSERT_OP = "text-insert";
 export const TEXT_FORMAT_OP = "text-format";
 /** Constant for text delete operations. */
 export const TEXT_DELETE_OP = "text-delete";
+/** Constant for snapshot operations. */
+export const SNAPSHOT_OP = "snapshot";
 
 /** Represents an operation to set a key-value pair in a map. */
 export interface MapSetOperation {
@@ -27,6 +31,15 @@ export interface MapSetOperation {
 	key: string;
 	/** The value to set. */
 	value: unknown;
+}
+
+/** Represents an operation to delete a key from a map. */
+export interface MapDeleteOperation {
+	type: typeof MAP_DELETE_OP;
+	/** The path to the target map within the document. */
+	path: (string | number)[];
+	/** The key to delete. */
+	key: string;
 }
 
 /** Represents an operation to insert elements into an array. */
@@ -95,15 +108,24 @@ export interface TextDeleteOperation {
 	length: number;
 }
 
+/** Represents an operation to load a full document snapshot. */
+export interface SnapshotOperation {
+	type: typeof SNAPSHOT_OP;
+	/** The serialized document state. */
+	state: Record<string, unknown>;
+}
+
 /** A union of all possible operation types. */
 export type Op =
 	| MapSetOperation
+	| MapDeleteOperation
 	| ArrayInsertOperation
 	| ArrayDeleteOperation
 	| ArrayReplaceOperation
 	| TextInsertOperation
 	| TextFormatOperation
-	| TextDeleteOperation;
+	| TextDeleteOperation
+	| SnapshotOperation;
 
 /**
  * Represents a single event in the CRDT's history.
@@ -147,6 +169,11 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 	switch (op.type) {
 		case MAP_SET_OP:
 			if (typeof (op as unknown as MapSetOperation).key !== "string") {
+				return false;
+			}
+			break;
+		case MAP_DELETE_OP:
+			if (typeof (op as unknown as MapDeleteOperation).key !== "string") {
 				return false;
 			}
 			break;
@@ -228,6 +255,14 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 				return false;
 			}
 			break;
+		case SNAPSHOT_OP:
+			if (
+				typeof (op as unknown as SnapshotOperation).state !== "object" ||
+				(op as unknown as SnapshotOperation).state === null
+			) {
+				return false;
+			}
+			break;
 		default:
 			return false;
 	}
@@ -254,6 +289,8 @@ export function createEventGraph() {
 		switch (op.type) {
 			case MAP_SET_OP:
 				break;
+			case MAP_DELETE_OP:
+				break;
 			case ARRAY_INSERT_OP:
 				if (op.index < 0) throw new EventGraphError("Invalid index");
 				break;
@@ -276,6 +313,8 @@ export function createEventGraph() {
 				if (op.index < 0 || op.length < 0) {
 					throw new EventGraphError("Invalid index or length");
 				}
+				break;
+			case SNAPSHOT_OP:
 				break;
 			default:
 				throw new EventGraphError("Invalid operation type");
@@ -404,6 +443,9 @@ export function createEventGraph() {
 	 */
 	function getLastCriticalVersion(): EventID[] {
 		let currentVersionIds = getVersion();
+		if (currentVersionIds.length === 1) {
+			return currentVersionIds;
+		}
 
 		while (currentVersionIds.length > 0) {
 			const parentIds = new Set<EventID>();
@@ -476,6 +518,49 @@ export function createEventGraph() {
 		return false;
 	}
 
+	/**
+	 * Creates a compacted version of the graph, replacing history up to `version` with a single snapshot event.
+	 * @param version The version to compact up to.
+	 * @param snapshotState The serialized document state at `version`.
+	 * @param snapshotReplicaId The replica ID to use for the new snapshot event.
+	 * @param snapshotSequence The sequence number to use for the new snapshot event.
+	 * @returns An object containing the new snapshot event and the rewritten remaining events.
+	 */
+	function compact(
+		version: EventID[],
+		snapshotState: Record<string, unknown>,
+		snapshotReplicaId: string,
+		snapshotSequence: number
+	): { snapshotEvent: CrdtEvent; remainingEvents: CrdtEvent[] } {
+		const newSnapshotEvent: CrdtEvent = {
+			id: `${snapshotReplicaId}:${snapshotSequence}`,
+			replicaId: snapshotReplicaId,
+			parents: [],
+			op: {
+				type: SNAPSHOT_OP,
+				state: snapshotState,
+			},
+		};
+
+		const eventsToKeep = getChangesSince(version);
+		const newEvents: CrdtEvent[] = [];
+		const keptIds = new Set(eventsToKeep.map((e) => e.id));
+
+		for (const ev of eventsToKeep) {
+			const newParents = ev.parents.map((p) =>
+				keptIds.has(p) ? p : newSnapshotEvent.id
+			);
+			const uniqueParents = Array.from(new Set(newParents));
+
+			newEvents.push({
+				...ev,
+				parents: uniqueParents,
+			});
+		}
+
+		return { snapshotEvent: newSnapshotEvent, remainingEvents: newEvents };
+	}
+
 	return {
 		addEvent,
 		getEvent,
@@ -486,6 +571,7 @@ export function createEventGraph() {
 		isCriticalVersion,
 		getLastCriticalVersion,
 		happenedBefore,
+		compact,
 		events,
 	};
 }

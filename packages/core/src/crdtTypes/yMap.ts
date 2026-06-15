@@ -1,7 +1,7 @@
 import { YArray } from "./yArray.js";
 import { YText } from "./yText.js";
 import type { Doc } from "./doc.js";
-import { CrdtEvent, MAP_SET_OP } from "../eventGraph/eventGraph.js";
+import { CrdtEvent, MAP_SET_OP, MAP_DELETE_OP } from "../eventGraph/eventGraph.js";
 
 /**
  * A collaborative map that can be modified by multiple replicas.
@@ -41,6 +41,20 @@ export class YMap {
 	}
 
 	/**
+	 * Deletes a key from the map.
+	 * This creates a local operation that will be propagated to other replicas.
+	 * @param key The key to delete.
+	 * @returns The generated event.
+	 */
+	delete(key: string): CrdtEvent {
+		return this._doc.egWalker.localOp({
+			type: MAP_DELETE_OP,
+			path: this._path,
+			key,
+		});
+	}
+
+	/**
 	 * Applies a set operation to the map's internal state.
 	 * @param key The key to set.
 	 * @param value The value to set.
@@ -48,6 +62,15 @@ export class YMap {
 	 */
 	_applySet(key: string, value: unknown) {
 		this._map.set(key, value);
+	}
+
+	/**
+	 * Applies a delete operation to the map's internal state.
+	 * @param key The key to delete.
+	 * @internal
+	 */
+	_applyDelete(key: string) {
+		this._map.delete(key);
 	}
 
 	/**

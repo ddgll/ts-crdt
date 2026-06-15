@@ -22,7 +22,7 @@ export class CrdtClient {
   private socket: MinimalClientWebSocket | null = null;
   private isApplyingRemote = false;
   private unsubscribeDocListener: (() => void) | null = null;
-  private messageListeners = new Set<(type: "snapshot" | "event", data: unknown) => void>();
+  private messageListeners = new Set<(type: "snapshot" | "event" | "awareness", data: unknown) => void>();
 
   constructor(doc: Doc) {
     this.doc = doc;
@@ -42,7 +42,7 @@ export class CrdtClient {
     this.unsubscribeDocListener = this.doc.egWalker.onEvent((event, isLocal) => {
       if (isLocal && !this.isApplyingRemote) {
         if (this.socket && this.socket.readyState === 1) { // OPEN
-          this.socket.send(JSON.stringify(event));
+          this.socket.send(JSON.stringify({ type: "event", data: event }));
         }
       }
     });
@@ -58,12 +58,22 @@ export class CrdtClient {
           this.doc.egWalker.loadStateSnapshot(parsed.data);
           this.notifyListeners("snapshot", parsed.data);
         } else if (parsed.type === "event") {
-          const event = parsed.data;
+          const event = parsed.data as CrdtEvent;
           // Avoid integrating our own events if they are broadcasted back
           if (event.replicaId !== this.doc.egWalker.getReplicaId()) {
             this.doc.egWalker.integrateRemote([event]);
           }
           this.notifyListeners("event", event);
+        } else if (parsed.type === "awareness") {
+          const { replicaId, state } = parsed.data as { replicaId: string, state: unknown };
+          if (replicaId !== this.doc.egWalker.getReplicaId()) {
+            this.doc.egWalker.setAwareness(state); // Wait, setAwareness is local. 
+            // We should bypass setAwareness overriding our own. Wait, setAwareness actually is per-replica in egWalker:
+            // setAwareness(state: unknown) sets it for `this.replicaId`.
+            // Let's modify setAwareness later or just set it directly:
+            this.doc.egWalker.awarenessStates.set(replicaId, state);
+          }
+          this.notifyListeners("awareness", parsed.data);
         }
       } catch (err) {
         console.error("[CrdtClient] Error processing message:", err);
@@ -87,16 +97,30 @@ export class CrdtClient {
   }
 
   /**
-   * Register a custom listener to receive raw sync events/snapshots (e.g. to update the UI).
+   * Sets the local awareness state and broadcasts it to other replicas.
+   * @param state The awareness state to broadcast.
    */
-  onMessage(cb: (type: "snapshot" | "event", data: unknown) => void): () => void {
+  setAwareness(state: unknown): void {
+    this.doc.egWalker.setAwareness(state);
+    if (this.socket && this.socket.readyState === 1) {
+      this.socket.send(JSON.stringify({
+        type: "awareness",
+        data: { replicaId: this.doc.egWalker.getReplicaId(), state }
+      }));
+    }
+  }
+
+  /**
+   * Register a custom listener to receive raw sync events/snapshots/awareness.
+   */
+  onMessage(cb: (type: "snapshot" | "event" | "awareness", data: unknown) => void): () => void {
     this.messageListeners.add(cb);
     return () => {
       this.messageListeners.delete(cb);
     };
   }
 
-  private notifyListeners(type: "snapshot" | "event", data: unknown) {
+  private notifyListeners(type: "snapshot" | "event" | "awareness", data: unknown) {
     for (const listener of this.messageListeners) {
       try {
         listener(type, data);

@@ -6,7 +6,9 @@ import {
 	createEventGraph,
 	EventID,
 	MAP_SET_OP,
+	MAP_DELETE_OP,
 	Op,
+	SNAPSHOT_OP,
 	TEXT_DELETE_OP,
 	TEXT_FORMAT_OP,
 	TEXT_INSERT_OP,
@@ -162,6 +164,13 @@ export class EgWalker {
 	 */
 	private applyNewEvent(event: CrdtEvent) {
 		const { op } = event;
+
+		if (op.type === SNAPSHOT_OP) {
+			const newRoot = YMap.fromJSON(this.doc, [], op.state);
+			this.doc._setRoot(newRoot);
+			return;
+		}
+
 		let current: YMap | YArray | YText = this.doc.getMap();
 
 		// Traverse the path, creating intermediate objects if they don't exist.
@@ -234,6 +243,13 @@ export class EgWalker {
 					throw new EgWalkerError("Target for map-set is not a YMap");
 				}
 				break;
+			case MAP_DELETE_OP:
+				if (target instanceof YMap) {
+					target._applyDelete(op.key);
+				} else {
+					throw new EgWalkerError("Target for map-delete is not a YMap");
+				}
+				break;
 			case ARRAY_INSERT_OP:
 				if (target instanceof YArray) {
 					target._applyInsert(op.index, op.values);
@@ -298,8 +314,37 @@ export class EgWalker {
 	 * @param events The array of events to integrate.
 	 */
 	integrateRemote(events: CrdtEvent[]) {
+		let stateOutOfSync = false;
 		for (const event of events) {
-			this.addEvent(event);
+			if (this.graph.getEvent(event.id)) {
+				continue;
+			}
+			if (event.replicaId === this.replicaId) {
+				const eventSequenceNumber = parseInt(event.id.split(":")[1], 10);
+				if (eventSequenceNumber >= this.sequenceNumber) {
+					this.sequenceNumber = eventSequenceNumber + 1;
+				}
+			}
+
+			const currentHeads = new Set(this.graph.getVersion());
+			const isDirectSuccessor = event.parents.length === currentHeads.size &&
+				event.parents.every((p) => currentHeads.has(p));
+
+			this.graph.addEvent(event);
+
+			if (isDirectSuccessor && !stateOutOfSync) {
+				this.applyNewEvent(event);
+			} else {
+				stateOutOfSync = true;
+			}
+
+			this.eventListeners.forEach((listener) =>
+				listener(event, event.replicaId === this.replicaId)
+			);
+		}
+
+		if (stateOutOfSync) {
+			this.rebuildStateAtVersion(this.graph.getVersion());
 		}
 	}
 
@@ -322,18 +367,23 @@ export class EgWalker {
 	 * @param snapshot The state snapshot to load.
 	 */
 	loadStateSnapshot(snapshot: StateSnapshot) {
-		// Do not overwrite this replica's ID.
-		// this.replicaId = snapshot.replicaId;
-		// Use the max to avoid event ID collisions when loading another replica's snapshot.
-		this.sequenceNumber = Math.max(
-			this.sequenceNumber,
-			snapshot.sequenceNumber,
-		);
-
 		this.graph = createEventGraph();
-		snapshot.graph.events.forEach(([_, event]) =>
-			this.graph.addEvent(event)
-		);
+		snapshot.graph.events.forEach(([_, event]) => {
+			this.graph.addEvent(event);
+			if (event.replicaId === this.replicaId) {
+				const eventSequenceNumber = parseInt(event.id.split(":")[1], 10);
+				if (eventSequenceNumber >= this.sequenceNumber) {
+					this.sequenceNumber = eventSequenceNumber + 1;
+				}
+			}
+		});
+
+		if (snapshot.replicaId === this.replicaId) {
+			this.sequenceNumber = Math.max(
+				this.sequenceNumber,
+				snapshot.sequenceNumber,
+			);
+		}
 
 		const newRoot = YMap.fromJSON(this.doc, [], snapshot.doc);
 		this.doc._setRoot(newRoot);

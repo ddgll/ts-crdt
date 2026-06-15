@@ -47,9 +47,10 @@ describe("CrdtClient", () => {
     // Local changes should be sent
     expect(ws.sentData.length).toBe(1);
     const parsed = JSON.parse(ws.sentData[0]);
-    expect(parsed.op.type).toBe("map-set");
-    expect(parsed.op.key).toBe("hello");
-    expect(parsed.op.value).toBe("world");
+    expect(parsed.type).toBe("event");
+    expect(parsed.data.op.type).toBe("map-set");
+    expect(parsed.data.op.key).toBe("hello");
+    expect(parsed.data.op.value).toBe("world");
 
     client.unbind();
   });

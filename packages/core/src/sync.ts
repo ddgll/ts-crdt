@@ -6,9 +6,13 @@ import { StateSnapshot } from "./egWalker/egWalker.js";
  */
 export type ServerMessage =
   | { type: "snapshot"; data: StateSnapshot }
-  | { type: "event"; data: CrdtEvent };
+  | { type: "event"; data: CrdtEvent }
+  | { type: "awareness"; data: { replicaId: string; state: unknown } };
 
 /**
  * Message sent from client to server.
  */
-export type ClientMessage = CrdtEvent;
+export type ClientMessage =
+  | { type: "event"; data: CrdtEvent }
+  | { type: "awareness"; data: { replicaId: string; state: unknown } }
+  | CrdtEvent; // Legacy format
