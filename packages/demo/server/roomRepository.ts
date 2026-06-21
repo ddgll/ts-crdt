@@ -14,7 +14,7 @@ export class SqliteRoomRepository implements Repository {
       .where(eq(schema.events.roomId, this.roomId));
       
     return rows.map((row) => {
-      const { roomId, ...eventData } = row;
+      const { roomId: _, ...eventData } = row;
       return eventData as CrdtEvent;
     });
   }
