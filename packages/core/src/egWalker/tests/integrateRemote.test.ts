@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, it, expect } from 'vitest';
 import { Doc } from "../../crdtTypes/doc.js";
 import { CrdtEvent, MAP_SET_OP } from "../../eventGraph/eventGraph.js";
 

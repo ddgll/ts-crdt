@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from 'vitest';
 import { Doc } from "../doc.js";
 import { YArray } from "../yArray.js";
 import { YMap } from "../yMap.js";

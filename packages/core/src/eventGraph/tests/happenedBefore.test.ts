@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, it, expect } from 'vitest';
 import { CrdtEvent, createEventGraph, MAP_SET_OP } from "../eventGraph.js";
 
 describe("happenedBefore", () => {

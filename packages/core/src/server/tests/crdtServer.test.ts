@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from 'vitest';
 import { CrdtServer, Repository, MinimalWebSocket } from "../crdtServer.js";
 import { InMemoryPubSubAdapter } from "../pubSubAdapter.js";
 import { CrdtEvent } from "../../index.js";

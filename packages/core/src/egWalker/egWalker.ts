@@ -208,7 +208,7 @@ export class EgWalker {
 						// For intermediate paths, always create a YMap.
 						next = new YMap(this.doc, newPath);
 					}
-					current._set(key as string, next);
+					current._applySet(key as string, next);
 				}
 			} else if (current instanceof YArray) {
 				next = current.get(key as number) as
@@ -355,7 +355,7 @@ export class EgWalker {
 	getStateSnapshot(): StateSnapshot {
 		return {
 			doc: this.doc.toJSON(),
-			graph: { events: Array.from(this.graph.events.entries()) },
+			graph: { events: this.graph.getEventEntries() },
 			replicaId: this.replicaId,
 			sequenceNumber: this.sequenceNumber,
 		};

@@ -578,6 +578,22 @@ export function createEventGraph() {
 		return { snapshotEvent: newSnapshotEvent, remainingEvents: newEvents };
 	}
 
+	/**
+	 * Gets all events in the graph.
+	 * @returns An array of all events.
+	 */
+	function getAllEvents(): CrdtEvent[] {
+		return Array.from(events.values());
+	}
+
+	/**
+	 * Gets all events in the graph as entries [EventID, CrdtEvent].
+	 * @returns An array of all event entries.
+	 */
+	function getEventEntries(): [EventID, CrdtEvent][] {
+		return Array.from(events.entries());
+	}
+
 	return {
 		addEvent,
 		getEvent,
@@ -589,6 +605,7 @@ export function createEventGraph() {
 		getLastCriticalVersion,
 		happenedBefore,
 		compact,
-		events,
+		getAllEvents,
+		getEventEntries,
 	};
 }

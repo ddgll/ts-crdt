@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, test, expect, vi } from 'vitest';
 import { CrdtServer } from "../crdtServer.js";
 
 type EventListener = (data: unknown) => void;

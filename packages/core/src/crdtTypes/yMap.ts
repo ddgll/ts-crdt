@@ -73,14 +73,7 @@ export class YMap {
 		this._map.delete(key);
 	}
 
-	/**
-	 * Internal method to set a value without generating an operation.
-	 * Used by the EgWalker to build the document state from events.
-	 * @internal
-	 */
-	_set(key: string, value: unknown) {
-		this._map.set(key, value);
-	}
+
 
 	/**
 	 * Gets the value associated with a key.
@@ -103,7 +96,7 @@ export class YMap {
 		const map = this._map.get(key);
 		if (map === undefined) {
 			const newMap = new YMap(this._doc, [...this._path, key]);
-			this._set(key, newMap);
+			this._applySet(key, newMap);
 			return newMap;
 		}
 		if (!(map instanceof YMap)) {
@@ -124,7 +117,7 @@ export class YMap {
 		const array = this._map.get(key);
 		if (array === undefined) {
 			const newArray = new YArray(this._doc, [...this._path, key]);
-			this._set(key, newArray);
+			this._applySet(key, newArray);
 			return newArray;
 		}
 		if (!(array instanceof YArray)) {
@@ -145,7 +138,7 @@ export class YMap {
 		const text = this._map.get(key);
 		if (text === undefined) {
 			const newText = new YText(this._doc, [...this._path, key]);
-			this._set(key, newText);
+			this._applySet(key, newText);
 			return newText;
 		}
 		if (!(text instanceof YText)) {

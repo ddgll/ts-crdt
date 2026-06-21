@@ -1,4 +1,4 @@
-import { Doc, ServerMessage, YArray, YText, YMap } from "./index.js";
+import { Doc, ServerMessage, YArray, YText, YMap, CrdtEvent } from "./index.js";
 
 /**
  * Minimal WebSocket interface required by CrdtClient.
@@ -11,6 +11,7 @@ export interface MinimalClientWebSocket {
   addEventListener(type: "close", cb: () => void): void;
   addEventListener(type: "error", cb: (err: unknown) => void): void;
   addEventListener(type: "open", cb: () => void): void;
+  removeEventListener?(type: "message", cb: (event: { data: unknown }) => void): void;
 }
 
 /**
@@ -22,6 +23,7 @@ export class CrdtClient {
   private socket: MinimalClientWebSocket | null = null;
   private isApplyingRemote = false;
   private unsubscribeDocListener: (() => void) | null = null;
+  private handleMessageRef: ((msgEvent: { data: unknown }) => void) | null = null;
   private messageListeners = new Set<(type: "snapshot" | "event" | "awareness", data: unknown) => void>();
 
   constructor(doc: Doc) {
@@ -47,7 +49,7 @@ export class CrdtClient {
       }
     });
 
-    const handleMessage = (msgEvent: { data: unknown }) => {
+    this.handleMessageRef = (msgEvent: { data: unknown }) => {
       try {
         const msgStr = typeof msgEvent.data === "string" ? msgEvent.data : String(msgEvent.data);
         const parsed = JSON.parse(msgStr) as ServerMessage;
@@ -67,10 +69,6 @@ export class CrdtClient {
         } else if (parsed.type === "awareness") {
           const { replicaId, state } = parsed.data as { replicaId: string, state: unknown };
           if (replicaId !== this.doc.egWalker.getReplicaId()) {
-            this.doc.egWalker.setAwareness(state); // Wait, setAwareness is local. 
-            // We should bypass setAwareness overriding our own. Wait, setAwareness actually is per-replica in egWalker:
-            // setAwareness(state: unknown) sets it for `this.replicaId`.
-            // Let's modify setAwareness later or just set it directly:
             this.doc.egWalker.awarenessStates.set(replicaId, state);
           }
           this.notifyListeners("awareness", parsed.data);
@@ -82,7 +80,7 @@ export class CrdtClient {
       }
     };
 
-    socket.addEventListener("message", handleMessage);
+    socket.addEventListener("message", this.handleMessageRef);
   }
 
   /**
@@ -93,6 +91,10 @@ export class CrdtClient {
       this.unsubscribeDocListener();
       this.unsubscribeDocListener = null;
     }
+    if (this.socket && this.handleMessageRef && this.socket.removeEventListener) {
+      this.socket.removeEventListener("message", this.handleMessageRef);
+    }
+    this.handleMessageRef = null;
     this.socket = null;
   }
 

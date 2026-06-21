@@ -106,9 +106,20 @@ export class CrdtServer {
 
           // Broadcast to all locally connected sockets
           const broadcastMsgString = JSON.stringify(message);
+          let senderReplicaId: string | undefined;
+          if (message.type === "event") {
+            senderReplicaId = message.data.replicaId;
+          } else if (message.type === "awareness") {
+            senderReplicaId = message.data.replicaId;
+          }
+
           for (const client of this.sockets) {
             if (client.readyState === 1) { // OPEN
-              client.send(broadcastMsgString);
+              const clientReplicaIds = this.socketReplicaIds.get(client);
+              const isSender = senderReplicaId && clientReplicaIds && clientReplicaIds.has(senderReplicaId);
+              if (!isSender) {
+                client.send(broadcastMsgString);
+              }
             }
           }
         });
@@ -174,6 +185,13 @@ export class CrdtServer {
         } else {
           return;
         }
+
+        let eventIds = this.socketReplicaIds.get(socket);
+        if (!eventIds) {
+          eventIds = new Set();
+          this.socketReplicaIds.set(socket, eventIds);
+        }
+        eventIds.add(event.replicaId);
 
         // Persist the event first using repository
         await this.repository.saveEvents([event]);

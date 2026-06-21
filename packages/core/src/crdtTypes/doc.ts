@@ -116,7 +116,7 @@ export class Doc {
 	/**
 	 * Creates a local array delete operation.
 	 * @param path The path to the array within the document.
-	param index The index at which to start deleting.
+	 * @param index The index at which to start deleting.
 	 * @param length The number of elements to delete.
 	 * @returns The generated event.
 	 * @internal

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from 'vitest';
 import { InMemoryPubSubAdapter } from "../pubSubAdapter.js";
 import { NodeRedisPubSubAdapter, IoRedisPubSubAdapter, IoRedisOnMessageListener } from "../redisPubSubAdapter.js";
 import { CrdtEvent } from "../../index.js";

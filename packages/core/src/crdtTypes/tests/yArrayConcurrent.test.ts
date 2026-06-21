@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from 'vitest';
 import { Doc } from "../doc.js";
 
 describe("YArray and YText Concurrent Edits", () => {
@@ -8,15 +8,15 @@ describe("YArray and YText Concurrent Edits", () => {
 
 		// Initial state
 		doc1.getMap().getArray("arr").insert(0, ["A"]);
-		doc2.egWalker.integrateRemote(Array.from(doc1.egWalker.graph.events.values()));
+		doc2.egWalker.integrateRemote(doc1.egWalker.graph.getAllEvents());
 
 		// Concurrent inserts at the same index
 		doc1.getMap().getArray("arr").insert(1, ["B"]); // doc1 inserts B after A
 		doc2.getMap().getArray("arr").insert(1, ["C"]); // doc2 inserts C after A
 
 		// Sync
-		const doc1LastEvent = Array.from(doc1.egWalker.graph.events.values()).pop()!;
-		const doc2LastEvent = Array.from(doc2.egWalker.graph.events.values()).pop()!;
+		const doc1LastEvent = doc1.egWalker.graph.getAllEvents().pop()!;
+		const doc2LastEvent = doc2.egWalker.graph.getAllEvents().pop()!;
 		doc1.egWalker.integrateRemote([doc2LastEvent]);
 		doc2.egWalker.integrateRemote([doc1LastEvent]);
 
@@ -35,13 +35,13 @@ describe("YArray and YText Concurrent Edits", () => {
 		const doc2 = new Doc("replica2");
 
 		doc1.getMap().getText("txt").insert(0, "A");
-		doc2.egWalker.integrateRemote(Array.from(doc1.egWalker.graph.events.values()));
+		doc2.egWalker.integrateRemote(doc1.egWalker.graph.getAllEvents());
 
 		doc1.getMap().getText("txt").insert(1, "B");
 		doc2.getMap().getText("txt").insert(1, "C");
 
-		const doc1LastTextEvent = Array.from(doc1.egWalker.graph.events.values()).pop()!;
-		const doc2LastTextEvent = Array.from(doc2.egWalker.graph.events.values()).pop()!;
+		const doc1LastTextEvent = doc1.egWalker.graph.getAllEvents().pop()!;
+		const doc2LastTextEvent = doc2.egWalker.graph.getAllEvents().pop()!;
 		doc1.egWalker.integrateRemote([doc2LastTextEvent]);
 		doc2.egWalker.integrateRemote([doc1LastTextEvent]);
 

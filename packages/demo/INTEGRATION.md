@@ -232,7 +232,7 @@ class InMemoryTextRepository implements Repository {
 
   async getEvents(): Promise<CrdtEvent[]> {
     if (this.initialized) {
-      return Array.from(this.doc.egWalker.graph.events.values());
+      return this.doc.egWalker.graph.getAllEvents();
     }
 
     const rows = await db
@@ -250,7 +250,7 @@ class InMemoryTextRepository implements Repository {
     }
 
     this.initialized = true;
-    return Array.from(this.doc.egWalker.graph.events.values());
+    return this.doc.egWalker.graph.getAllEvents();
   }
 
   async saveEvent(event: CrdtEvent): Promise<void> {

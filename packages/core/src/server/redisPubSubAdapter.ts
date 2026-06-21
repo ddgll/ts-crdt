@@ -1,4 +1,4 @@
-import { CrdtEvent } from "../index.js";
+import { CrdtEvent, ServerMessage } from "../index.js";
 import { PubSubAdapter } from "./pubSubAdapter.js";
 
 /**
@@ -15,17 +15,17 @@ export class NodeRedisPubSubAdapter implements PubSubAdapter {
     }
   ) {}
 
-  async publish(roomId: string, event: CrdtEvent): Promise<void> {
+  async publish(roomId: string, message: ServerMessage): Promise<void> {
     const channel = `room:${roomId}`;
-    await this.pubClient.publish(channel, JSON.stringify(event));
+    await this.pubClient.publish(channel, JSON.stringify(message));
   }
 
-  async subscribe(roomId: string, onEvent: (event: CrdtEvent) => void): Promise<() => void> {
+  async subscribe(roomId: string, onMessage: (message: ServerMessage) => void): Promise<() => void> {
     const channel = `room:${roomId}`;
     
     const listener = (message: string) => {
       try {
-        onEvent(JSON.parse(message));
+        onMessage(JSON.parse(message));
       } catch (err) {
         console.error("Failed to parse Redis event from channel:", channel, err);
       }
@@ -57,18 +57,18 @@ export class IoRedisPubSubAdapter implements PubSubAdapter {
     }
   ) {}
 
-  async publish(roomId: string, event: CrdtEvent): Promise<void> {
+  async publish(roomId: string, message: ServerMessage): Promise<void> {
     const channel = `room:${roomId}`;
-    await this.pubClient.publish(channel, JSON.stringify(event));
+    await this.pubClient.publish(channel, JSON.stringify(message));
   }
 
-  async subscribe(roomId: string, onEvent: (event: CrdtEvent) => void): Promise<() => void> {
+  async subscribe(roomId: string, onMessage: (message: ServerMessage) => void): Promise<() => void> {
     const channel = `room:${roomId}`;
     
     const listener: IoRedisOnMessageListener = (chan, msg) => {
       if (chan === channel) {
         try {
-          onEvent(JSON.parse(msg));
+          onMessage(JSON.parse(msg));
         } catch (err) {
           console.error("Failed to parse Redis event from channel:", chan, err);
         }

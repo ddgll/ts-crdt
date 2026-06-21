@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from 'vitest';
 import { Doc, CrdtEvent } from "../index.js";
 import { CrdtClient, MinimalClientWebSocket } from "../crdtClient.js";
 
@@ -22,6 +22,20 @@ class MockClientWebSocket implements MinimalClientWebSocket {
     cb: ((event: { data: unknown }) => void) | (() => void) | ((err: unknown) => void)
   ): void {
     this.listeners[type].push(cb as (...args: unknown[]) => void);
+  }
+
+  removeEventListener(
+    type: "message" | "close" | "error" | "open",
+    cb: ((event: { data: unknown }) => void) | (() => void) | ((err: unknown) => void)
+  ): void {
+    const index = this.listeners[type].indexOf(cb as (...args: unknown[]) => void);
+    if (index !== -1) {
+      this.listeners[type].splice(index, 1);
+    }
+  }
+
+  getListenerCount(type: "message" | "close" | "error" | "open"): number {
+    return this.listeners[type].length;
   }
 
   emit(type: "message", event: { data: unknown }): void;
@@ -133,6 +147,18 @@ describe("CrdtClient", () => {
     expect(receivedEvent.id).toBe("another:0");
 
     client.unbind();
+  });
+
+  it("should cleanly remove message listeners on unbind", () => {
+    const doc = new Doc("client-replica");
+    const client = new CrdtClient(doc);
+    const ws = new MockClientWebSocket();
+
+    client.bind(ws);
+    expect(ws.getListenerCount("message")).toBe(1);
+
+    client.unbind();
+    expect(ws.getListenerCount("message")).toBe(0);
   });
 
   describe("syncText", () => {

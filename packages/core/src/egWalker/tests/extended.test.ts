@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, it, expect } from 'vitest';
 import { Doc } from "../../crdtTypes/doc.js";
 import { YMap } from "../../crdtTypes/yMap.js";
 import { YArray } from "../../crdtTypes/yArray.js";
@@ -16,7 +16,7 @@ describe("EgWalker extended coverage", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
     const arr = new YArray(doc, ["my-array"]);
-    doc.getMap()._set("my-array", arr);
+    doc.getMap()._applySet("my-array", arr);
 
     const op = {
       type: MAP_SET_OP,
@@ -69,7 +69,7 @@ describe("EgWalker extended coverage", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
     const arr = new YArray(doc, ["my-array"]);
-    doc.getMap()._set("my-array", arr);
+    doc.getMap()._applySet("my-array", arr);
 
     const op = {
       type: ARRAY_INSERT_OP,
@@ -148,7 +148,7 @@ describe("EgWalker extended coverage", () => {
   it("should throw when path contains a non-CRDT component", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
-    doc.getMap()._set("a", 123); // 'a' is a primitive, not a YMap/YArray
+    doc.getMap()._applySet("a", 123); // 'a' is a primitive, not a YMap/YArray/YText
     const op: Op = {
       type: MAP_SET_OP,
       path: ["a", "b"],

@@ -1,5 +1,5 @@
+import { describe, it, expect } from 'vitest';
 import { Doc } from "../doc.js";
-import { describe, it, expect } from "vitest";
 
 describe("YMap Delete Operations", () => {
 	it("should delete a key locally and be undefined", () => {

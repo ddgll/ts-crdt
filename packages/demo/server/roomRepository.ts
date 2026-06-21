@@ -8,10 +8,15 @@ export class SqliteRoomRepository implements Repository {
   constructor(private roomId: string) {}
 
   async getEvents(): Promise<CrdtEvent[]> {
-    return await db
+    const rows = await db
       .select()
       .from(schema.events)
       .where(eq(schema.events.roomId, this.roomId));
+      
+    return rows.map((row) => {
+      const { roomId, ...eventData } = row;
+      return eventData as CrdtEvent;
+    });
   }
 
   async saveEvents(events: CrdtEvent[]): Promise<void> {

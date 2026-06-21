@@ -1,5 +1,5 @@
+import { describe, it, expect } from 'vitest';
 import { Doc } from "../doc.js";
-import { describe, it, expect } from "vitest";
 
 describe("loadStateSnapshot sequence number handling", () => {
 	it("should properly advance the sequence number when loading a snapshot with local events", () => {

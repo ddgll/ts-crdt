@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from 'vitest';
 import { BufferedRepository } from "../bufferedRepository.js";
 import { Repository } from "../crdtServer.js";
 import { CrdtEvent } from "../../index.js";

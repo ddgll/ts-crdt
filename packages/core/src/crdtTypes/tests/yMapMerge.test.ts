@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from 'vitest';
 import { Doc } from "../doc.js";
 
 describe("YMap merge", () => {
@@ -30,7 +30,7 @@ describe("YMap merge", () => {
 		expect(map1.getArray("arr").length).toBe(1);
 
 		// The events should be generated in doc2's walker
-		const doc2Events = Array.from(doc2.egWalker.graph.events.values());
+		const doc2Events = doc2.egWalker.graph.getAllEvents();
 		const lastEvent = doc2Events[doc2Events.length - 1];
 		expect(lastEvent.id).toContain("doc2:");
 	});
