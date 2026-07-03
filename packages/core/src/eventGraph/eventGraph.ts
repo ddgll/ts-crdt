@@ -459,31 +459,95 @@ export function createEventGraph() {
 	 * @returns The event IDs of the last single-headed version, or an empty array if not found.
 	 */
 	function getLastCriticalVersion(): EventID[] {
-		let currentVersionIds = getVersion();
+		const currentVersionIds = getVersion();
+		if (currentVersionIds.length === 0) return [];
 		if (currentVersionIds.length === 1) {
 			return currentVersionIds;
 		}
 
-		while (currentVersionIds.length > 0) {
-			const parentIds = new Set<EventID>();
-			for (const eventId of currentVersionIds) {
-				const event = getEvent(eventId);
-				if (event) {
-					for (const parentId of event.parents) {
-						parentIds.add(parentId);
+		const allEvents = topologicalSort(getAllEvents());
+		const n = allEvents.length;
+		const eventIndex = new Map<EventID, number>();
+		allEvents.forEach((e, i) => eventIndex.set(e.id, i));
+
+		let commonAncestors = new Set<EventID>();
+		let first = true;
+		for (const headId of currentVersionIds) {
+			const ancestors = new Set<EventID>();
+			const stack = [headId];
+			ancestors.add(headId);
+			while (stack.length > 0) {
+				const curr = stack.pop()!;
+				const ev = getEvent(curr);
+				if (ev) {
+					for (const p of ev.parents) {
+						if (!ancestors.has(p)) {
+							ancestors.add(p);
+							stack.push(p);
+						}
+					}
+				}
+			}
+			if (first) {
+				commonAncestors = ancestors;
+				first = false;
+			} else {
+				const intersection = new Set<EventID>();
+				for (const a of commonAncestors) {
+					if (ancestors.has(a)) intersection.add(a);
+				}
+				commonAncestors = intersection;
+			}
+		}
+
+		const candidateIds = Array.from(commonAncestors).sort(
+			(a, b) => eventIndex.get(b)! - eventIndex.get(a)!
+		);
+
+		for (const candidateId of candidateIds) {
+			const i = eventIndex.get(candidateId)!;
+
+			let ancestorCount = 0;
+			const visitedA = new Set<EventID>();
+			const stackA = [candidateId];
+			visitedA.add(candidateId);
+			while (stackA.length > 0) {
+				const curr = stackA.pop()!;
+				const ev = getEvent(curr);
+				if (ev) {
+					for (const p of ev.parents) {
+						if (!visitedA.has(p)) {
+							visitedA.add(p);
+							stackA.push(p);
+							ancestorCount++;
+						}
 					}
 				}
 			}
 
-			if (parentIds.size === 1) {
-				return Array.from(parentIds);
+			if (ancestorCount !== i) continue;
+
+			let descendantCount = 0;
+			const visitedD = new Set<EventID>();
+			const stackD = [candidateId];
+			visitedD.add(candidateId);
+			while (stackD.length > 0) {
+				const curr = stackD.pop()!;
+				const kids = children.get(curr);
+				if (kids) {
+					for (const k of kids) {
+						if (!visitedD.has(k)) {
+							visitedD.add(k);
+							stackD.push(k);
+							descendantCount++;
+						}
+					}
+				}
 			}
 
-			if (parentIds.size === 0) {
-				return [];
+			if (descendantCount === n - 1 - i) {
+				return [candidateId];
 			}
-
-			currentVersionIds = Array.from(parentIds);
 		}
 
 		return [];
