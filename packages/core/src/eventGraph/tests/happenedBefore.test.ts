@@ -66,7 +66,7 @@ describe("happenedBefore", () => {
     expect(eventGraph.happenedBefore(eventA, eventB)).toBe(false);
   });
 
-  it("should return true for the same event", () => {
+  it("should return false for the same event (strict partial order)", () => {
     const eventGraph = createEventGraph();
     const eventA: CrdtEvent = {
       id: "A:1",
@@ -75,7 +75,7 @@ describe("happenedBefore", () => {
       op: { type: MAP_SET_OP, path: [], key: "a", value: 1 },
     };
     eventGraph.addEvent(eventA);
-    expect(eventGraph.happenedBefore(eventA, eventA)).toBe(true);
+    expect(eventGraph.happenedBefore(eventA, eventA)).toBe(false);
   });
 
   it("should handle complex graphs with redundant paths", () => {

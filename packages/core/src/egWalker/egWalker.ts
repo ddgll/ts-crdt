@@ -70,12 +70,29 @@ export class EgWalker {
 	}
 
 	/**
+	 * Notifies all registered event listeners with error isolation.
+	 * A faulty listener will not prevent other listeners from being called.
+	 */
+	private notifyListeners(event: CrdtEvent, isLocal: boolean) {
+		for (const listener of this.eventListeners) {
+			try {
+				listener(event, isLocal);
+			} catch (err) {
+				console.error("[EgWalker] Event listener error:", err);
+			}
+		}
+	}
+
+	/**
 	 * Creates a new EgWalker instance.
 	 * @param doc The parent document.
 	 * @param replicaId An optional unique identifier for this replica.
 	 * @param graph An optional existing event graph to use.
 	 */
 	constructor(doc: Doc, replicaId?: string, graph = createEventGraph()) {
+		if (replicaId && replicaId.includes(':')) {
+			throw new EgWalkerError("replicaId must not contain ':'");
+		}
 		this.graph = graph;
 		this.doc = doc;
 		this.replicaId = replicaId ||
@@ -128,7 +145,7 @@ export class EgWalker {
 		this.graph.addEvent(event);
 		this.cachedSortedEvents.push(event);
 		this.applyNewEvent(event);
-		this.eventListeners.forEach((listener) => listener(event, true));
+		this.notifyListeners(event, true);
 		return event;
 	}
 
@@ -172,9 +189,7 @@ export class EgWalker {
 		this.cachedSortedEvents = newSorted;
 		this.isAtHead = true;
 
-		this.eventListeners.forEach((listener) =>
-			listener(event, event.replicaId === this.replicaId)
-		);
+		this.notifyListeners(event, event.replicaId === this.replicaId);
 	}
 
 	/**
@@ -336,6 +351,7 @@ export class EgWalker {
 	integrateRemote(events: CrdtEvent[]) {
 		const oldSorted = this.cachedSortedEvents;
 		let anyAdded = false;
+		const addedEvents: CrdtEvent[] = [];
 
 		for (const event of events) {
 			if (this.graph.getEvent(event.id)) {
@@ -350,10 +366,7 @@ export class EgWalker {
 
 			this.graph.addEvent(event);
 			anyAdded = true;
-
-			this.eventListeners.forEach((listener) =>
-				listener(event, event.replicaId === this.replicaId)
-			);
+			addedEvents.push(event);
 		}
 
 		if (anyAdded) {
@@ -375,6 +388,11 @@ export class EgWalker {
 			}
 			this.cachedSortedEvents = newSorted;
 			this.isAtHead = true;
+		}
+
+		// Notify listeners AFTER state is fully rebuilt and consistent
+		for (const event of addedEvents) {
+			this.notifyListeners(event, event.replicaId === this.replicaId);
 		}
 	}
 

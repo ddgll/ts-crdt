@@ -1,4 +1,4 @@
-import { CrdtEvent, ServerMessage } from "../index.js";
+import { ServerMessage } from "../index.js";
 
 /**
  * Interface representing a publish/subscribe adapter to replicate events across instances.

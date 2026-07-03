@@ -41,8 +41,9 @@ export class Doc {
 	 * A new EgWalker is created, and the root YMap is replaced.
 	 */
 	clear() {
-		const replicaId = this.egWalker.getReplicaId();
-		this.egWalker = new EgWalker(this, replicaId);
+		// Generate a new EgWalker with a fresh replicaId to prevent event ID
+		// collisions with events from the old session that may exist on other replicas.
+		this.egWalker = new EgWalker(this);
 		this._root = new YMap(this, []);
 	}
 

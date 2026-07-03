@@ -572,13 +572,14 @@ export function createEventGraph() {
 	}
 
 	/**
-	 * Checks if event `a` happened before event `b` (i.e., `a` is an ancestor of `b`).
+	 * Checks if event `a` strictly happened before event `b` (i.e., `a` is a proper ancestor of `b`).
+	 * Note: An event does NOT happen before itself (strict partial order).
 	 * @param a The first event.
 	 * @param b The second event.
-	 * @returns True if `a` is an ancestor of `b`, false otherwise.
+	 * @returns True if `a` is a proper ancestor of `b`, false otherwise.
 	 */
 	function happenedBefore(a: CrdtEvent, b: CrdtEvent): boolean {
-		if (a.id === b.id) return true;
+		if (a.id === b.id) return false;
 		const stack = [a.id];
 		const visited = new Set<EventID>();
 

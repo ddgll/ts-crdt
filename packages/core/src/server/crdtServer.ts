@@ -1,4 +1,4 @@
-import { CrdtEvent, Doc, ServerMessage, ClientMessage } from "../index.js";
+import { CrdtEvent, Doc, ServerMessage, isCrdtEvent } from "../index.js";
 import { PubSubAdapter } from "./pubSubAdapter.js";
 
 /**
@@ -83,9 +83,7 @@ export class CrdtServer {
       const events = await this.repository.getEvents();
       if (events.length > 0) {
         console.log(`Loading ${events.length} events from the repository.`);
-        events.forEach((e) => {
-          this.doc.egWalker.integrateRemote([e]);
-        });
+        this.doc.egWalker.integrateRemote(events);
       } else {
         console.log("No existing events. Initializing new document.");
         const event = this.doc.localInsert(["content"], 0, []);
@@ -183,6 +181,12 @@ export class CrdtServer {
         } else if (parsed.type === "event") {
           event = parsed.data as CrdtEvent;
         } else {
+          return;
+        }
+
+        // Validate the event structure to prevent injection of arbitrary data
+        if (!isCrdtEvent(event)) {
+          console.warn("Rejected invalid event from client:", event.id);
           return;
         }
 

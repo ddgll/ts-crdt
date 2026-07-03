@@ -1,4 +1,4 @@
-import { describe, it, test, expect } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { Doc } from "../doc.js";
 import { isCrdtEvent } from "../../eventGraph/eventGraph.js";
 

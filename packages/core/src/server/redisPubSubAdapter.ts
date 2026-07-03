@@ -1,4 +1,4 @@
-import { CrdtEvent, ServerMessage } from "../index.js";
+import { ServerMessage } from "../index.js";
 import { PubSubAdapter } from "./pubSubAdapter.js";
 
 /**
