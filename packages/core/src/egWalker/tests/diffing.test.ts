@@ -14,11 +14,10 @@ describe("Single-event state diffing for concurrent edits", () => {
 		// Spy on doc._setRoot to detect full rebuilds
 		const setRootSpyA = vi.spyOn(docA, "_setRoot");
 
-		// Replica A creates a local edit (event2)
+		// Replica A creates a local edit
 		docA.getMap().set("key2", "A");
-		const event2 = docA.egWalker.graph.getChangesSince([event1.id])[0];
 
-		// Replica B creates a local edit concurrently (event3)
+		// Replica B creates a local edit concurrently
 		docB.getMap().set("key3", "B");
 		const event3 = docB.egWalker.graph.getChangesSince([event1.id])[0];
 
@@ -44,20 +43,19 @@ describe("Single-event state diffing for concurrent edits", () => {
 		// Spy on doc._setRoot to detect full rebuilds
 		const setRootSpyB = vi.spyOn(docB, "_setRoot");
 
-		// Replica A creates a local edit (event2)
+		// Replica A creates a local edit
 		docA.getMap().set("key2", "A");
 		const event2 = docA.egWalker.graph.getChangesSince([event1.id])[0];
 
-		// Replica B creates a local edit concurrently (event3)
+		// Replica B creates a local edit concurrently
 		docB.getMap().set("key3", "B");
-		const event3 = docB.egWalker.graph.getChangesSince([event1.id])[0];
 
 		// Because replicaB > replicaA in string sort, event3 (from B) sorts AFTER event2 (from A).
-		// Therefore, when B integrates event2, event2 sorts BEFORE event3.
-		// This forces a rebuild because the new event is inserted in the middle of the history.
+		// Therefore, when B integrates event2, it has to rebuild the state because event2
+		// sorts before B's local event.
 		docB.egWalker.integrateRemote([event2]);
 
-		// Ensure it DID rebuild
+		// Ensure it did rebuild
 		expect(setRootSpyB).toHaveBeenCalled();
 		expect(docB.getMap().get("key2")).toBe("A");
 		expect(docB.getMap().get("key3")).toBe("B");
