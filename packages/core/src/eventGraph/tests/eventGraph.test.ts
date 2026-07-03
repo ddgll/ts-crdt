@@ -11,23 +11,6 @@ import {
 } from "../eventGraph.js";
 
 describe("eventGraph", () => {
-  it("should throw an error for an array delete operation with a negative length", () => {
-    const eventGraph = createEventGraph();
-    const event: CrdtEvent = {
-      id: "1",
-      replicaId: "A",
-      parents: [],
-      op: {
-        type: ARRAY_DELETE_OP,
-        path: [],
-        index: 0,
-        length: -1,
-      },
-    };
-    expect(() => eventGraph.addEvent(event)).toThrow(
-      new EventGraphError("Invalid index or length"),
-    );
-  });
 
   it("should throw an error for an invalid operation type", () => {
     const eventGraph = createEventGraph();
@@ -75,7 +58,7 @@ describe("eventGraph", () => {
         id: "1",
         replicaId: "A",
         parents: [],
-        op: { type: ARRAY_INSERT_OP, path: [], index: 0, values: [1] },
+        op: { type: ARRAY_INSERT_OP, path: [], afterId: null, values: [1] },
       };
       expect(isCrdtEvent(event)).toBe(true);
     });
@@ -84,7 +67,7 @@ describe("eventGraph", () => {
         id: "1",
         replicaId: "A",
         parents: [],
-        op: { type: ARRAY_DELETE_OP, path: [], index: 0, length: 1 },
+        op: { type: ARRAY_DELETE_OP, path: [], afterId: null, targetIds: ["A:0"] },
       };
       expect(isCrdtEvent(event)).toBe(true);
     });
@@ -106,43 +89,16 @@ describe("eventGraph", () => {
       };
       expect(isCrdtEvent(event)).toBe(false);
     });
-    it("should return false for invalid array insert op (index)", () => {
-      const event = {
-        id: "1",
-        replicaId: "A",
-        parents: [],
-        op: { type: ARRAY_INSERT_OP, index: "a", values: [] },
-      };
-      expect(isCrdtEvent(event)).toBe(false);
-    });
     it("should return false for invalid array insert op (values)", () => {
       const event = {
         id: "1",
         replicaId: "A",
         parents: [],
-        op: { type: ARRAY_INSERT_OP, index: 0, values: "not-an-array" },
+        op: { type: ARRAY_INSERT_OP, afterId: null, values: "not-an-array" },
       };
       expect(isCrdtEvent(event)).toBe(false);
     });
-    it("should return false for invalid array delete op (index)", () => {
-      const event = {
-        id: "1",
-        replicaId: "A",
-        parents: [],
-        op: { type: ARRAY_DELETE_OP, index: "a", length: 1 },
-      };
-      expect(isCrdtEvent(event)).toBe(false);
-    });
-    it("should return false for invalid array delete op (length)", () => {
-      const event = {
-        id: "1",
-        replicaId: "A",
-        parents: [],
-        op: { type: ARRAY_DELETE_OP, index: 0, length: "a" },
-      };
-      expect(isCrdtEvent(event)).toBe(false);
-    });
-    it("should return false for invalid array replace op", () => {
+    it("should return false for invalid array replace op (values)", () => {
       const event = {
         id: "1",
         replicaId: "A",

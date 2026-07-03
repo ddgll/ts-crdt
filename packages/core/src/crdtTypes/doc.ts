@@ -1,9 +1,6 @@
 import { YMap } from './yMap.js';
 import { EgWalker } from '../egWalker/egWalker.js';
 import {
-	ARRAY_DELETE_OP,
-	ARRAY_INSERT_OP,
-	ARRAY_REPLACE_OP,
 	MAP_SET_OP,
 } from '../eventGraph/eventGraph.js';
 
@@ -97,52 +94,4 @@ export class Doc {
 		this._root = root;
 	}
 
-	/**
-	 * Creates a local array insert operation.
-	 * @param path The path to the array within the document.
-	 * @param index The index at which to insert.
-	 * @param values The values to insert.
-	 * @returns The generated event.
-	 * @internal
-	 */
-	localInsert(path: (string | number)[], index: number, values: unknown[]) {
-		return this.egWalker.localOp({
-			type: ARRAY_INSERT_OP,
-			path,
-			index,
-			values,
-		});
-	}
-
-	/**
-	 * Creates a local array delete operation.
-	 * @param path The path to the array within the document.
-	 * @param index The index at which to start deleting.
-	 * @param length The number of elements to delete.
-	 * @returns The generated event.
-	 * @internal
-	 */
-	localDelete(path: (string | number)[], index: number, length: number) {
-		return this.egWalker.localOp({
-			type: ARRAY_DELETE_OP,
-			path,
-			index,
-			length,
-		});
-	}
-
-	/**
-	 * Creates a local array replace operation.
-	 * @param path The path to the array within the document.
-	 * @param values The new values for the array.
-	 * @returns The generated event.
-	 * @internal
-	 */
-	localReplace(path: (string | number)[], values: unknown[]) {
-		return this.egWalker.localOp({
-			type: ARRAY_REPLACE_OP,
-			path,
-			values,
-		});
-	}
 }

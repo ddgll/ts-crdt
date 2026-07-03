@@ -7,19 +7,25 @@ import {
 } from "../eventGraph/eventGraph.js";
 
 /**
+ * Internal representation of an item in the YArray.
+ */
+interface YArrayItem {
+	id: string;
+	value: unknown;
+	isDeleted: boolean;
+}
+
+/**
  * A collaborative array that can be modified by multiple replicas.
  * It supports insertion, deletion, and replacement of elements.
  * 
  * **Note on Concurrency**: YArray resolves concurrent index-based operations
- * via deterministic event replay. It does not use unique item IDs. Concurrent 
- * inserts at the same index will converge deterministically, but it is not 
- * recommended for real-time character-level text editing. Use `YText` or 
- * `ARRAY_REPLACE_OP` for text.
+ * via deterministic event replay using RGA-like stable IDs, preserving user intent.
  */
 export class YArray {
 	private _doc: Doc;
 	private _path: (string | number)[];
-	private _data: unknown[];
+	private _data: YArrayItem[];
 
 	/**
 	 * Creates a new YArray instance.
@@ -34,10 +40,10 @@ export class YArray {
 	}
 
 	/**
-	 * Gets the number of elements in the array.
+	 * Gets the number of non-deleted elements in the array.
 	 */
 	get length(): number {
-		return this._data.length;
+		return this._data.filter(i => !i.isDeleted).length;
 	}
 
 	/**
@@ -46,10 +52,24 @@ export class YArray {
 	 * @param values The elements to insert.
 	 */
 	insert(index: number, values: unknown[]) {
+		let afterId: string | null = null;
+		if (index > 0) {
+			let count = 0;
+			for (let i = 0; i < this._data.length; i++) {
+				if (!this._data[i].isDeleted) {
+					count++;
+					if (count === index) {
+						afterId = this._data[i].id;
+						break;
+					}
+				}
+			}
+		}
+		
 		this._doc.egWalker.localOp({
 			type: ARRAY_INSERT_OP,
 			path: this._path,
-			index,
+			afterId,
 			values,
 		});
 	}
@@ -60,12 +80,25 @@ export class YArray {
 	 * @param length The number of elements to delete.
 	 */
 	delete(index: number, length: number) {
-		this._doc.egWalker.localOp({
-			type: ARRAY_DELETE_OP,
-			path: this._path,
-			index,
-			length,
-		});
+		const targetIds: string[] = [];
+		let count = 0;
+		for (let i = 0; i < this._data.length; i++) {
+			if (!this._data[i].isDeleted) {
+				if (count >= index && count < index + length) {
+					targetIds.push(this._data[i].id);
+				}
+				count++;
+				if (count === index + length) break;
+			}
+		}
+
+		if (targetIds.length > 0) {
+			this._doc.egWalker.localOp({
+				type: ARRAY_DELETE_OP,
+				path: this._path,
+				targetIds,
+			});
+		}
 	}
 
 	/**
@@ -83,31 +116,64 @@ export class YArray {
 
 	/**
 	 * Applies an insert operation to the array's internal state.
-	 * @param index The index at which to insert.
+	 * @param eventId The ID of the event triggering the insert.
+	 * @param afterId The ID of the element to insert after.
 	 * @param values The values to insert.
 	 * @internal
 	 */
-	_applyInsert(index: number, values: unknown[]) {
-		this._data.splice(index, 0, ...values);
+	_applyInsert(eventId: string, afterId: string | null, values: unknown[]) {
+		let insertIdx = 0;
+		if (afterId !== null) {
+			const idx = this._data.findIndex(item => item.id === afterId);
+			if (idx !== -1) {
+				insertIdx = idx + 1;
+			} else {
+				// Fallback if afterId not found (shouldn't happen with valid topological sort)
+				insertIdx = this._data.length;
+			}
+		}
+
+		const newItems: YArrayItem[] = values.map((val, i) => ({
+			id: `${eventId}:${i}`,
+			value: val,
+			isDeleted: false
+		}));
+
+		this._data.splice(insertIdx, 0, ...newItems);
 	}
 
 	/**
 	 * Applies a delete operation to the array's internal state.
-	 * @param index The index at which to start deleting.
-	 * @param length The number of elements to delete.
+	 * @param targetIds The IDs of the elements to delete.
 	 * @internal
 	 */
-	_applyDelete(index: number, length: number) {
-		this._data.splice(index, length);
+	_applyDelete(targetIds: string[]) {
+		const targetSet = new Set(targetIds);
+		for (const item of this._data) {
+			if (targetSet.has(item.id)) {
+				item.isDeleted = true;
+			}
+		}
 	}
 
 	/**
 	 * Applies a replace operation to the array's internal state.
+	 * @param eventId The ID of the replace event.
 	 * @param values The new values for the array.
 	 * @internal
 	 */
-	_applyReplace(values: unknown[]) {
-		this._data = [...values];
+	_applyReplace(eventId: string, values: unknown[]) {
+		// Mark everything as deleted
+		for (const item of this._data) {
+			item.isDeleted = true;
+		}
+		// Insert new values at the end (or anywhere, since everything else is deleted)
+		const newItems: YArrayItem[] = values.map((val, i) => ({
+			id: `${eventId}:${i}`,
+			value: val,
+			isDeleted: false
+		}));
+		this._data.push(...newItems);
 	}
 
 	/**
@@ -116,7 +182,14 @@ export class YArray {
 	 * @returns The element at the specified index.
 	 */
 	get(index: number): unknown {
-		return this._data[index];
+		let count = 0;
+		for (const item of this._data) {
+			if (!item.isDeleted) {
+				if (count === index) return item.value;
+				count++;
+			}
+		}
+		return undefined;
 	}
 
 	/**
@@ -124,14 +197,19 @@ export class YArray {
 	 * @returns A JSON representation of the array.
 	 */
 	toJSON(): unknown[] {
-		return this._data.map((item) => {
-			if (item instanceof YMap) {
-				return { crdtType: "YMap", data: item.toJSON() };
-			} else if (item instanceof YArray) {
-				return { crdtType: "YArray", data: item.toJSON() };
+		const result: unknown[] = [];
+		for (const item of this._data) {
+			if (!item.isDeleted) {
+				let val = item.value;
+				if (val instanceof YMap) {
+					val = { crdtType: "YMap", data: val.toJSON() };
+				} else if (val instanceof YArray) {
+					val = { crdtType: "YArray", data: val.toJSON() };
+				}
+				result.push(val);
 			}
-			return item;
-		});
+		}
+		return result;
 	}
 
 	/**
@@ -148,8 +226,12 @@ export class YArray {
 		json: unknown[],
 	): YArray {
 		const arr = new YArray(doc, path);
+		// Note: when loading from a JSON snapshot, we don't have the original event IDs.
+		// A proper snapshot needs to serialize the RGA IDs as well. But for this simplified demo,
+		// we assign temporary stable IDs based on the path if this is a brand new array load.
 		arr._data = json.map((itemData, i) => {
 			const itemPath = [...path, i];
+			let parsedValue = itemData;
 			if (
 				itemData &&
 				typeof itemData === "object" &&
@@ -162,20 +244,26 @@ export class YArray {
 				};
 				switch (crdtType) {
 					case "YMap":
-						return YMap.fromJSON(
+						parsedValue = YMap.fromJSON(
 							doc,
 							itemPath,
 							data as Record<string, unknown>,
 						);
+						break;
 					case "YArray":
-						return YArray.fromJSON(
+						parsedValue = YArray.fromJSON(
 							doc,
 							itemPath,
 							data as unknown[],
 						);
+						break;
 				}
 			}
-			return itemData;
+			return {
+				id: `snapshot:${path.join('.')}:${i}`,
+				value: parsedValue,
+				isDeleted: false
+			};
 		});
 		return arr;
 	}

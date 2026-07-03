@@ -21,7 +21,7 @@ describe("EventGraph.addEvent", () => {
       op: {
         type: ARRAY_INSERT_OP,
         path,
-        index: 0,
+        afterId: null,
         values: ["a"],
       },
     };
@@ -38,7 +38,7 @@ describe("EventGraph.addEvent", () => {
       op: {
         type: ARRAY_INSERT_OP,
         path,
-        index: 0,
+        afterId: null,
         values: ["a"],
       },
     };
@@ -49,7 +49,7 @@ describe("EventGraph.addEvent", () => {
       op: {
         type: ARRAY_INSERT_OP,
         path,
-        index: 1,
+        afterId: "A:0",
         values: ["b"],
       },
     };
@@ -68,7 +68,7 @@ describe("EventGraph.addEvent", () => {
       op: {
         type: ARRAY_INSERT_OP,
         path,
-        index: 0,
+        afterId: null,
         values: ["a"],
       },
     };
@@ -79,7 +79,7 @@ describe("EventGraph.addEvent", () => {
       op: {
         type: ARRAY_INSERT_OP,
         path,
-        index: 1,
+        afterId: "A:0",
         values: ["b"],
       },
     };
@@ -90,7 +90,7 @@ describe("EventGraph.addEvent", () => {
       op: {
         type: ARRAY_INSERT_OP,
         path,
-        index: 2,
+        afterId: "A:1",
         values: ["c"],
       },
     };
@@ -109,7 +109,7 @@ describe("EventGraph.addEvent", () => {
       op: {
         type: ARRAY_INSERT_OP,
         path,
-        index: 0,
+        afterId: null,
         values: ["a"],
       },
     };
@@ -117,7 +117,7 @@ describe("EventGraph.addEvent", () => {
       id: "2",
       replicaId: "r1",
       parents: ["1"],
-      op: { type: ARRAY_DELETE_OP, path, index: 0, length: 1 },
+      op: { type: ARRAY_DELETE_OP, path, afterId: null, targetIds: ["A:0"] },
     };
     graph.addEvent(event1);
     graph.addEvent(event2);
@@ -133,7 +133,7 @@ describe("EventGraph.addEvent", () => {
       op: {
         type: ARRAY_INSERT_OP,
         path,
-        index: 0,
+        afterId: null,
         values: ["a"],
       },
     };
@@ -149,7 +149,7 @@ describe("EventGraph.addEvent", () => {
       op: {
         type: ARRAY_INSERT_OP,
         path,
-        index: 0,
+        afterId: null,
         values: ["a"],
       },
     };

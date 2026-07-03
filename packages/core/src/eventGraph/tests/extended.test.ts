@@ -74,7 +74,7 @@ describe("eventGraph extended coverage", () => {
       expect(
         isCrdtEvent({
           ...baseEvent,
-          op: { ...baseEvent.op, index: 0, values: "not-an-array" },
+          op: { ...baseEvent.op, afterId: null, values: "not-an-array" },
         })
       ).toBe(false);
     });
@@ -92,7 +92,7 @@ describe("eventGraph extended coverage", () => {
       expect(
         isCrdtEvent({
           ...baseEvent,
-          op: { ...baseEvent.op, index: 0, length: "1" },
+          op: { ...baseEvent.op, afterId: null, length: "1" },
         })
       ).toBe(false);
     });
@@ -114,31 +114,7 @@ describe("eventGraph extended coverage", () => {
   });
 
   describe("addEvent error conditions", () => {
-    it("should throw for invalid array op indices", () => {
-      const graph = createEventGraph();
-      const event: CrdtEvent = {
-        id: "1",
-        replicaId: "A",
-        parents: [],
-        op: { type: ARRAY_INSERT_OP, path: [], index: -1, values: [] },
-      };
-      expect(() => graph.addEvent(event)).toThrow(
-        new EventGraphError("Invalid index")
-      );
-    });
 
-    it("should throw for invalid array delete length", () => {
-      const graph = createEventGraph();
-      const event: CrdtEvent = {
-        id: "1",
-        replicaId: "A",
-        parents: [],
-        op: { type: ARRAY_DELETE_OP, path: [], index: 0, length: -1 },
-      };
-      expect(() => graph.addEvent(event)).toThrow(
-        new EventGraphError("Invalid index or length")
-      );
-    });
 
     it("should throw for invalid operation type", () => {
       const graph = createEventGraph();

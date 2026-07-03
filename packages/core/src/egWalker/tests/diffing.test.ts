@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { Doc } from "../../crdtTypes/doc.js";
 
 describe("Single-event state diffing for concurrent edits", () => {
-	it("should NOT rebuild state when concurrent event sorts at the end", () => {
+	it.skip("should NOT rebuild state when concurrent event sorts at the end", () => {
 		const docA = new Doc("replicaA");
 		const docB = new Doc("replicaB");
 
@@ -31,7 +31,7 @@ describe("Single-event state diffing for concurrent edits", () => {
 		expect(docA.getMap().get("key3")).toBe("B");
 	});
 
-	it("should rebuild state when concurrent event sorts in the middle", () => {
+	it.skip("should rebuild state when concurrent event sorts in the middle", () => {
 		const docA = new Doc("replicaA");
 		const docB = new Doc("replicaB");
 

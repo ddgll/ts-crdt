@@ -21,8 +21,7 @@ describe('YText', () => {
 
     expect(formattingEvents.length).toBe(1);
     const formatOp = formattingEvents[0][1].op as TextFormatOperation;
-    expect(formatOp.index).toBe(0);
-    expect(formatOp.length).toBe(5);
+    expect(formatOp.targetIds.length).toBe(5);
     expect(formatOp.attributes).toEqual({ bold: true });
   });
 });

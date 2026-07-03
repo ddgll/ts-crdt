@@ -214,29 +214,31 @@ export class CrdtClient {
     const deletedLength = oldEnd - start;
     const insertedText = newText.substring(start, newEnd);
 
-    if (isTextOp) {
-      if (deletedLength > 0) {
-        this.doc.egWalker.localOp({
-          type: "text-delete",
-          path,
-          index: start,
-          length: deletedLength,
-        });
-      }
-      if (insertedText.length > 0) {
-        this.doc.egWalker.localOp({
-          type: "text-insert",
-          path,
-          index: start,
-          text: insertedText,
-        });
+    if (target) {
+      if (target instanceof YText) {
+        if (deletedLength > 0) target.delete(start, deletedLength);
+        if (insertedText.length > 0) target.insert(start, insertedText);
+      } else if (target instanceof YArray) {
+        if (deletedLength > 0) target.delete(start, deletedLength);
+        if (insertedText.length > 0) target.insert(start, insertedText.split(""));
       }
     } else {
-      if (deletedLength > 0) {
-        this.doc.localDelete(path, start, deletedLength);
-      }
       if (insertedText.length > 0) {
-        this.doc.localInsert(path, start, insertedText.split(""));
+        if (isTextOp) {
+          this.doc.egWalker.localOp({
+            type: "text-insert",
+            path,
+            afterId: null,
+            text: insertedText,
+          });
+        } else {
+          this.doc.egWalker.localOp({
+            type: "array-insert",
+            path,
+            afterId: null,
+            values: insertedText.split(""),
+          });
+        }
       }
     }
   }

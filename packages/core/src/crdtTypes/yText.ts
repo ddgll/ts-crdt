@@ -18,14 +18,26 @@ interface FormattingRange {
 }
 
 /**
+ * Internal representation of a character in the YText.
+ */
+interface YTextItem {
+	id: string;
+	char: string;
+	isDeleted: boolean;
+	attributes: Record<string, unknown>;
+}
+
+/**
  * A collaborative text type for rich-text editing.
  * It supports inserting text, deleting text, and applying formatting attributes.
+ * 
+ * **Note on Concurrency**: YText resolves concurrent index-based operations
+ * via deterministic event replay using RGA-like stable IDs, preserving user intent.
  */
 export class YText {
 	private _doc: Doc;
 	private _path: (string | number)[];
-	private _text: string = "";
-	private _formatting: FormattingRange[] = [];
+	private _data: YTextItem[] = [];
 
 	/**
 	 * Creates a new YText instance.
@@ -43,7 +55,13 @@ export class YText {
 	 * @returns The plain text content.
 	 */
 	toString(): string {
-		return this._text;
+		let result = "";
+		for (const item of this._data) {
+			if (!item.isDeleted) {
+				result += item.char;
+			}
+		}
+		return result;
 	}
 
 	/**
@@ -52,10 +70,24 @@ export class YText {
 	 * @param text The text to insert.
 	 */
 	insert(index: number, text: string) {
+		if (text.length === 0) return;
+		let afterId: string | null = null;
+		if (index > 0) {
+			let count = 0;
+			for (let i = 0; i < this._data.length; i++) {
+				if (!this._data[i].isDeleted) {
+					count++;
+					if (count === index) {
+						afterId = this._data[i].id;
+						break;
+					}
+				}
+			}
+		}
 		this._doc.egWalker.localOp({
 			type: TEXT_INSERT_OP,
 			path: this._path,
-			index,
+			afterId,
 			text,
 		});
 	}
@@ -66,12 +98,25 @@ export class YText {
 	 * @param length The number of characters to delete.
 	 */
 	delete(index: number, length: number) {
-		this._doc.egWalker.localOp({
-			type: TEXT_DELETE_OP,
-			path: this._path,
-			index,
-			length,
-		});
+		if (length <= 0) return;
+		const targetIds: string[] = [];
+		let count = 0;
+		for (let i = 0; i < this._data.length; i++) {
+			if (!this._data[i].isDeleted) {
+				if (count >= index && count < index + length) {
+					targetIds.push(this._data[i].id);
+				}
+				count++;
+				if (count === index + length) break;
+			}
+		}
+		if (targetIds.length > 0) {
+			this._doc.egWalker.localOp({
+				type: TEXT_DELETE_OP,
+				path: this._path,
+				targetIds,
+			});
+		}
 	}
 
 	/**
@@ -81,91 +126,152 @@ export class YText {
 	 * @param attributes The formatting attributes to apply.
 	 */
 	format(index: number, length: number, attributes: Record<string, unknown>) {
-		this._doc.egWalker.localOp({
-			type: TEXT_FORMAT_OP,
-			path: this._path,
-			index,
-			length,
-			attributes,
-		});
+		if (length <= 0) return;
+		const targetIds: string[] = [];
+		let count = 0;
+		for (let i = 0; i < this._data.length; i++) {
+			if (!this._data[i].isDeleted) {
+				if (count >= index && count < index + length) {
+					targetIds.push(this._data[i].id);
+				}
+				count++;
+				if (count === index + length) break;
+			}
+		}
+		if (targetIds.length > 0) {
+			this._doc.egWalker.localOp({
+				type: TEXT_FORMAT_OP,
+				path: this._path,
+				targetIds,
+				attributes,
+			});
+		}
 	}
 
 	/**
 	 * Internal method to apply a text insertion from an event.
-	 * @param index The index at which to insert.
+	 * @param eventId The ID of the event triggering the insert.
+	 * @param afterId The ID of the character to insert after.
 	 * @param text The text to insert.
 	 * @internal
 	 */
-	_applyInsert(index: number, text: string) {
-		this._text = this._text.slice(0, index) + text +
-			this._text.slice(index);
-		// Shift formatting ranges that start at or after the insertion point.
-		for (const range of this._formatting) {
-			if (range.index >= index) {
-				range.index += text.length;
-			} else if (range.index + range.length > index) {
-				// Range spans the insertion point — expand it.
-				range.length += text.length;
+	_applyInsert(eventId: string, afterId: string | null, text: string) {
+		let insertIdx = 0;
+		if (afterId !== null) {
+			const idx = this._data.findIndex(item => item.id === afterId);
+			if (idx !== -1) {
+				insertIdx = idx + 1;
+			} else {
+				insertIdx = this._data.length;
+			}
+		}
+
+		const newItems: YTextItem[] = [];
+		for (let i = 0; i < text.length; i++) {
+			newItems.push({
+				id: `${eventId}:${i}`,
+				char: text[i],
+				isDeleted: false,
+				attributes: {}
+			});
+		}
+
+		this._data.splice(insertIdx, 0, ...newItems);
+	}
+
+	/**
+	 * Internal method to apply a text deletion from an event.
+	 * @param targetIds The IDs of the characters to delete.
+	 * @internal
+	 */
+	_applyDelete(targetIds: string[]) {
+		const targetSet = new Set(targetIds);
+		for (const item of this._data) {
+			if (targetSet.has(item.id)) {
+				item.isDeleted = true;
 			}
 		}
 	}
 
 	/**
-	 * Internal method to apply a text deletion from an event.
-	 * @param index The index at which to start deleting.
-	 * @param length The number of characters to delete.
-	 * @internal
-	 */
-	_applyDelete(index: number, length: number) {
-		this._text = this._text.slice(0, index) +
-			this._text.slice(index + length);
-		// Adjust formatting ranges affected by the deletion.
-		this._formatting = this._formatting
-			.map((range) => {
-				if (range.index >= index + length) {
-					// Range is entirely after the deletion — shift back.
-					return { ...range, index: range.index - length };
-				} else if (range.index + range.length <= index) {
-					// Range is entirely before the deletion — unchanged.
-					return range;
-				} else {
-					// Range overlaps with the deletion — shrink or remove.
-					const overlapStart = Math.max(range.index, index);
-					const overlapEnd = Math.min(
-						range.index + range.length,
-						index + length,
-					);
-					const overlapLength = overlapEnd - overlapStart;
-					const newLength = range.length - overlapLength;
-					const newIndex = range.index < index ? range.index : index;
-					if (newLength <= 0) return null;
-					return { ...range, index: newIndex, length: newLength };
-				}
-			})
-			.filter((r): r is FormattingRange => r !== null);
-	}
-
-	/**
 	 * Internal method to apply formatting from an event.
-	 * @param index The start index of the range.
-	 * @param length The length of the range.
+	 * @param targetIds The IDs of the characters to format.
 	 * @param attributes The formatting attributes to apply.
 	 * @internal
 	 */
 	_applyFormat(
-		index: number,
-		length: number,
+		targetIds: string[],
 		attributes: Record<string, unknown>,
 	) {
-		this._formatting.push({ index, length, attributes });
+		const targetSet = new Set(targetIds);
+		for (const item of this._data) {
+			if (targetSet.has(item.id)) {
+				item.attributes = { ...item.attributes, ...attributes };
+			}
+		}
 	}
 
 	/**
 	 * Gets the formatting ranges applied to this text.
+	 * Reconstructs continuous ranges of identical formatting.
 	 * @returns A copy of the formatting ranges array.
 	 */
 	getFormatting(): FormattingRange[] {
-		return [...this._formatting];
+		const ranges: FormattingRange[] = [];
+		let currentIndex = 0;
+		let currentRange: FormattingRange | null = null;
+
+		for (const item of this._data) {
+			if (item.isDeleted) continue;
+
+			const hasAttributes = Object.keys(item.attributes).length > 0;
+			
+			if (hasAttributes) {
+				if (!currentRange) {
+					currentRange = {
+						index: currentIndex,
+						length: 1,
+						attributes: { ...item.attributes }
+					};
+				} else {
+					// Check if attributes match exactly
+					const attrs1 = currentRange.attributes;
+					const attrs2 = item.attributes;
+					const keys1 = Object.keys(attrs1);
+					const keys2 = Object.keys(attrs2);
+					let match = keys1.length === keys2.length;
+					if (match) {
+						for (const k of keys1) {
+							if (attrs1[k] !== attrs2[k]) {
+								match = false;
+								break;
+							}
+						}
+					}
+
+					if (match) {
+						currentRange.length++;
+					} else {
+						ranges.push(currentRange);
+						currentRange = {
+							index: currentIndex,
+							length: 1,
+							attributes: { ...item.attributes }
+						};
+					}
+				}
+			} else {
+				if (currentRange) {
+					ranges.push(currentRange);
+					currentRange = null;
+				}
+			}
+			currentIndex++;
+		}
+		if (currentRange) {
+			ranges.push(currentRange);
+		}
+		return ranges;
 	}
 
 	/**
@@ -182,7 +288,7 @@ export class YText {
 		text: string,
 	): YText {
 		const ytext = new YText(doc, path);
-		ytext._text = text;
+		ytext._applyInsert(`snapshot:${path.join('.')}`, null, text);
 		return ytext;
 	}
 }

@@ -12,14 +12,16 @@ describe("Replicate bug", () => {
 
     // 1. First client instance creates a document and adds content.
     const doc1 = new Doc();
-    doc1.localInsert(["content"], 0, []);
+    doc1.getMap().getArray("content").insert(0, []);
 
     const snapshot = doc1.egWalker.getStateSnapshot();
     const serializedSnapshot = JSON.parse(JSON.stringify(snapshot));
 
     const doc2 = new Doc();
     doc2.egWalker.loadStateSnapshot(serializedSnapshot);
-    const event = doc2.localReplace(["content"], ["test"]);
+    doc2.getMap().getArray("content").replace(["test"]);
+    const events = doc2.egWalker.getStateSnapshot().graph.events;
+    const event = events[events.length - 1][1];
     doc1.egWalker.integrateRemote([event]);
 
     const snapshot2 = doc1.egWalker.getStateSnapshot();
@@ -28,7 +30,8 @@ describe("Replicate bug", () => {
     doc3.egWalker.loadStateSnapshot(serializedSnapshot2);
 
     // This operation is expected to fail with a circular dependency error in the user's environment.
-    expect(isCrdtEvent(doc3.localReplace(["content"], ["to", "to"]))).toBe(
+    doc3.getMap().getArray("content").replace(["to", "to"]);
+    expect(isCrdtEvent(doc3.egWalker.getStateSnapshot().graph.events[doc3.egWalker.getStateSnapshot().graph.events.length - 1][1])).toBe(
       true
     );
   });

@@ -47,8 +47,8 @@ export interface ArrayInsertOperation {
 	type: typeof ARRAY_INSERT_OP;
 	/** The path to the target array within the document. */
 	path: (string | number)[];
-	/** The index at which to insert. */
-	index: number;
+	/** The ID of the element to insert after. Null indicates insertion at the beginning. */
+	afterId: string | null;
 	/** The values to insert. */
 	values: unknown[];
 }
@@ -58,10 +58,8 @@ export interface ArrayDeleteOperation {
 	type: typeof ARRAY_DELETE_OP;
 	/** The path to the target array within the document. */
 	path: (string | number)[];
-	/** The index at which to start deleting. */
-	index: number;
-	/** The number of elements to delete. */
-	length: number;
+	/** The IDs of the elements to delete. */
+	targetIds: string[];
 }
 
 /** Represents an operation to replace the entire contents of an array. */
@@ -78,8 +76,8 @@ export interface TextInsertOperation {
 	type: typeof TEXT_INSERT_OP;
 	/** The path to the target text object within the document. */
 	path: (string | number)[];
-	/** The index at which to insert the text. */
-	index: number;
+	/** The ID of the character to insert after. Null indicates insertion at the beginning. */
+	afterId: string | null;
 	/** The text to insert. */
 	text: string;
 }
@@ -89,10 +87,8 @@ export interface TextFormatOperation {
 	type: typeof TEXT_FORMAT_OP;
 	/** The path to the target text object within the document. */
 	path: (string | number)[];
-	/** The start index of the range to format. */
-	index: number;
-	/** The length of the range to format. */
-	length: number;
+	/** The IDs of the characters to format. */
+	targetIds: string[];
 	/** The formatting attributes to apply. */
 	attributes: Record<string, unknown>;
 }
@@ -102,10 +98,8 @@ export interface TextDeleteOperation {
 	type: typeof TEXT_DELETE_OP;
 	/** The path to the target text object within the document. */
 	path: (string | number)[];
-	/** The index at which to start deleting. */
-	index: number;
-	/** The number of characters to delete. */
-	length: number;
+	/** The IDs of the characters to delete. */
+	targetIds: string[];
 }
 
 /** Represents an operation to load a full document snapshot. */
@@ -179,8 +173,8 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			break;
 		case ARRAY_INSERT_OP:
 			if (
-				typeof (op as unknown as ArrayInsertOperation).index !==
-					"number"
+				(op as unknown as ArrayInsertOperation).afterId !== null &&
+				typeof (op as unknown as ArrayInsertOperation).afterId !== "string"
 			) {
 				return false;
 			}
@@ -192,14 +186,7 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			break;
 		case ARRAY_DELETE_OP:
 			if (
-				typeof (op as unknown as ArrayDeleteOperation).index !==
-					"number"
-			) {
-				return false;
-			}
-			if (
-				typeof (op as unknown as ArrayDeleteOperation).length !==
-					"number"
+				!Array.isArray((op as unknown as ArrayDeleteOperation).targetIds)
 			) {
 				return false;
 			}
@@ -213,7 +200,8 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			break;
 		case TEXT_INSERT_OP:
 			if (
-				typeof (op as unknown as TextInsertOperation).index !== "number"
+				(op as unknown as TextInsertOperation).afterId !== null &&
+				typeof (op as unknown as TextInsertOperation).afterId !== "string"
 			) {
 				return false;
 			}
@@ -225,13 +213,7 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			break;
 		case TEXT_FORMAT_OP:
 			if (
-				typeof (op as unknown as TextFormatOperation).index !== "number"
-			) {
-				return false;
-			}
-			if (
-				typeof (op as unknown as TextFormatOperation).length !==
-					"number"
+				!Array.isArray((op as unknown as TextFormatOperation).targetIds)
 			) {
 				return false;
 			}
@@ -244,13 +226,7 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			break;
 		case TEXT_DELETE_OP:
 			if (
-				typeof (op as unknown as TextDeleteOperation).index !== "number"
-			) {
-				return false;
-			}
-			if (
-				typeof (op as unknown as TextDeleteOperation).length !==
-					"number"
+				!Array.isArray((op as unknown as TextDeleteOperation).targetIds)
 			) {
 				return false;
 			}
@@ -292,27 +268,16 @@ export function createEventGraph() {
 			case MAP_DELETE_OP:
 				break;
 			case ARRAY_INSERT_OP:
-				if (op.index < 0) throw new EventGraphError("Invalid index");
 				break;
 			case ARRAY_DELETE_OP:
-				if (op.index < 0 || op.length < 0) {
-					throw new EventGraphError("Invalid index or length");
-				}
 				break;
 			case ARRAY_REPLACE_OP:
 				break;
 			case TEXT_INSERT_OP:
-				if (op.index < 0) throw new EventGraphError("Invalid index");
 				break;
 			case TEXT_FORMAT_OP:
-				if (op.index < 0 || op.length < 0) {
-					throw new EventGraphError("Invalid index or length");
-				}
 				break;
 			case TEXT_DELETE_OP:
-				if (op.index < 0 || op.length < 0) {
-					throw new EventGraphError("Invalid index or length");
-				}
 				break;
 			case SNAPSHOT_OP:
 				break;
@@ -396,9 +361,16 @@ export function createEventGraph() {
 
 		// Sort events by ID for deterministic iteration — ensures concurrent
 		// events are always applied in the same order across all replicas.
-		const sortedExisting = [...existingEvents].sort((a, b) =>
-			a.id.localeCompare(b.id)
-		);
+		const sortedExisting = [...existingEvents].sort((a, b) => {
+			const [repA, seqAStr] = a.id.split(':');
+			const [repB, seqBStr] = b.id.split(':');
+			const seqA = parseInt(seqAStr, 10);
+			const seqB = parseInt(seqBStr, 10);
+			if (seqA !== seqB) {
+				return seqA - seqB;
+			}
+			return repA.localeCompare(repB);
+		});
 
 		for (const rootEvent of sortedExisting) {
 			if (visited.has(rootEvent.id)) continue;

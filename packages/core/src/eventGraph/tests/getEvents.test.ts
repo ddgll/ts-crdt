@@ -15,13 +15,13 @@ describe("EventGraph.getEvents", () => {
       id: "1",
       replicaId: "r1",
       parents: [],
-      op: { type: ARRAY_INSERT_OP, path, index: 0, values: ["a"] },
+      op: { type: ARRAY_INSERT_OP, path, afterId: null, values: ["a"] },
     };
     const event2: CrdtEvent = {
       id: "2",
       replicaId: "r1",
       parents: ["1"],
-      op: { type: ARRAY_INSERT_OP, path, index: 1, values: ["b"] },
+      op: { type: ARRAY_INSERT_OP, path, afterId: "A:0", values: ["b"] },
     };
     graph.addEvent(event1);
     graph.addEvent(event2);
@@ -42,19 +42,19 @@ describe("EventGraph.getEvents", () => {
       id: "1",
       replicaId: "r1",
       parents: [],
-      op: { type: ARRAY_INSERT_OP, path, index: 0, values: ["a"] },
+      op: { type: ARRAY_INSERT_OP, path, afterId: null, values: ["a"] },
     };
     const event2: CrdtEvent = {
       id: "2",
       replicaId: "r1",
       parents: ["1"],
-      op: { type: ARRAY_INSERT_OP, path, index: 1, values: ["b"] },
+      op: { type: ARRAY_INSERT_OP, path, afterId: "A:0", values: ["b"] },
     };
     const event3: CrdtEvent = {
       id: "3",
       replicaId: "r2",
       parents: ["1"],
-      op: { type: ARRAY_INSERT_OP, path, index: 1, values: ["c"] },
+      op: { type: ARRAY_INSERT_OP, path, afterId: "A:0", values: ["c"] },
     };
     graph.addEvent(event1);
     graph.addEvent(event2);
@@ -70,13 +70,13 @@ describe("EventGraph.getEvents", () => {
       id: "1",
       replicaId: "r1",
       parents: [],
-      op: { type: ARRAY_INSERT_OP, path, index: 0, values: ["a"] },
+      op: { type: ARRAY_INSERT_OP, path, afterId: null, values: ["a"] },
     };
     const event2: CrdtEvent = {
       id: "2",
       replicaId: "r1",
       parents: ["1"],
-      op: { type: ARRAY_DELETE_OP, path, index: 0, length: 1 },
+      op: { type: ARRAY_DELETE_OP, path, afterId: null, targetIds: ["A:0"] },
     };
     graph.addEvent(event1);
     graph.addEvent(event2);

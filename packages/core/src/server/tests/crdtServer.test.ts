@@ -94,7 +94,9 @@ describe("CrdtServer", () => {
 
     // Simulate sending an event from ws1
     const localDoc = server.getDoc();
-    const dummyEvent = localDoc.localInsert(["content"], 0, ["a"]);
+    localDoc.getMap().getArray("content").insert(0, ["a"]);
+    const events1 = localDoc.egWalker.getStateSnapshot().graph.events;
+    const dummyEvent = events1[events1.length - 1][1];
 
     ws1.emit("message", JSON.stringify(dummyEvent));
 
@@ -118,7 +120,9 @@ describe("CrdtServer", () => {
 
     // Make an edit
     const localDoc = server.getDoc();
-    const dummyEvent = localDoc.localInsert(["content"], 0, ["a"]);
+    localDoc.getMap().getArray("content").insert(0, ["a"]);
+    const events2 = localDoc.egWalker.getStateSnapshot().graph.events;
+    const dummyEvent = events2[events2.length - 1][1];
     ws1.emit("message", JSON.stringify(dummyEvent));
     await new Promise((resolve) => setTimeout(resolve, 10));
 
@@ -166,7 +170,9 @@ describe("Clustered execution via InMemoryPubSubAdapter", () => {
     expect(ws2.sentData.length).toBe(1);
 
     // Send local edit on server1
-    const dummyEvent = server1.getDoc().localInsert(["content"], 0, ["a"]);
+    server1.getDoc().getMap().getArray("content").insert(0, ["a"]);
+    const events3 = server1.getDoc().egWalker.getStateSnapshot().graph.events;
+    const dummyEvent = events3[events3.length - 1][1];
     ws1.emit("message", JSON.stringify(dummyEvent));
 
     // Wait for microtasks (to let pubsub broadcast and async events settle)

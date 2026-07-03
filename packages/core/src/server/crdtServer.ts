@@ -86,7 +86,9 @@ export class CrdtServer {
         this.doc.egWalker.integrateRemote(events);
       } else {
         console.log("No existing events. Initializing new document.");
-        const event = this.doc.localInsert(["content"], 0, []);
+        this.doc.getMap().getArray("content").insert(0, []);
+        const events = this.doc.egWalker.getStateSnapshot().graph.events;
+        const event = events[events.length - 1][1];
         if (event) {
           await this.repository.saveEvents([event]);
         }
@@ -292,7 +294,9 @@ export class CrdtServer {
       await this.repository.clearEvents();
     }
 
-    const event = this.doc.localInsert(["content"], 0, []);
+    this.doc.getMap().getArray("content").insert(0, []);
+    const events = this.doc.egWalker.getStateSnapshot().graph.events;
+    const event = events[events.length - 1][1];
     if (event) {
       await this.repository.saveEvents([event]);
     }

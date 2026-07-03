@@ -287,7 +287,7 @@ export class EgWalker {
 				break;
 			case ARRAY_INSERT_OP:
 				if (target instanceof YArray) {
-					target._applyInsert(op.index, op.values);
+					target._applyInsert(event.id, op.afterId, op.values);
 				} else {
 					throw new EgWalkerError(
 						"Target for array-insert is not a YArray",
@@ -296,7 +296,7 @@ export class EgWalker {
 				break;
 			case ARRAY_DELETE_OP:
 				if (target instanceof YArray) {
-					target._applyDelete(op.index, op.length);
+					target._applyDelete(op.targetIds);
 				} else {
 					throw new EgWalkerError(
 						"Target for array-delete is not a YArray",
@@ -305,7 +305,7 @@ export class EgWalker {
 				break;
 			case ARRAY_REPLACE_OP:
 				if (target instanceof YArray) {
-					target._applyReplace(op.values);
+					target._applyReplace(event.id, op.values);
 				} else {
 					throw new EgWalkerError(
 						`Target for array-replace is not a YArray, but a ${target.constructor.name} at path ${
@@ -316,7 +316,7 @@ export class EgWalker {
 				break;
 			case TEXT_INSERT_OP:
 				if (target instanceof YText) {
-					target._applyInsert(op.index, op.text);
+					target._applyInsert(event.id, op.afterId, op.text);
 				} else {
 					throw new EgWalkerError(
 						"Target for text-insert is not a YText",
@@ -325,7 +325,7 @@ export class EgWalker {
 				break;
 			case TEXT_FORMAT_OP:
 				if (target instanceof YText) {
-					target._applyFormat(op.index, op.length, op.attributes);
+					target._applyFormat(op.targetIds, op.attributes);
 				} else {
 					throw new EgWalkerError(
 						"Target for text-format is not a YText",
@@ -334,7 +334,7 @@ export class EgWalker {
 				break;
 			case TEXT_DELETE_OP:
 				if (target instanceof YText) {
-					target._applyDelete(op.index, op.length);
+					target._applyDelete(op.targetIds);
 				} else {
 					throw new EgWalkerError(
 						"Target for text-delete is not a YText",

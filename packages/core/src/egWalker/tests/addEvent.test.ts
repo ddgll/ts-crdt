@@ -31,7 +31,7 @@ describe("EgWalker.addEvent", () => {
       id: "1",
       replicaId: "r1",
       parents: [],
-      op: { type: ARRAY_INSERT_OP, path: ["items"], index: 0, values: ["a"] },
+      op: { type: ARRAY_INSERT_OP, path: ["items"], afterId: null, values: ["a"] },
     };
     walker.addEvent(event);
     expect(items.get(0) as string).toEqual("a");
@@ -43,12 +43,13 @@ describe("EgWalker.addEvent", () => {
     const items = doc.getMap().getArray("items");
     items.insert(0, ["a", "b", "c"]);
 
+    const insertEvent = doc.egWalker.getStateSnapshot().graph.events.find(e => e[1].op.type === ARRAY_INSERT_OP)?.[1];
     const deleteEvent: CrdtEvent = {
       id: "4", // after 3 inserts
       replicaId: "r1",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       parents: (walker as any)["graph"].getVersion(),
-      op: { type: ARRAY_DELETE_OP, path: ["items"], index: 1, length: 1 },
+      op: { type: ARRAY_DELETE_OP, path: ["items"], targetIds: [`${insertEvent!.id}:1`] },
     };
     walker.addEvent(deleteEvent);
     expect((items.toJSON() as string[]).join("")).toEqual("ac");
@@ -61,7 +62,7 @@ describe("EgWalker.addEvent", () => {
       id: "1",
       replicaId: "r1",
       parents: ["non-existent"],
-      op: { type: ARRAY_INSERT_OP, path: ["items"], index: 0, values: ["a"] },
+      op: { type: ARRAY_INSERT_OP, path: ["items"], afterId: null, values: ["a"] },
     };
     expect(() => walker.addEvent(event)).toThrow(
       new EventGraphError("Invalid parent")
@@ -96,15 +97,4 @@ describe("EgWalker.addEvent", () => {
     expect(() => walker.addEvent(event)).toThrow("Invalid operation type");
   });
 
-  it("handle event with invalid index", () => {
-    const doc = new Doc();
-    const walker = doc.egWalker;
-    const event: CrdtEvent = {
-      id: "1",
-      replicaId: "r1",
-      parents: [],
-      op: { type: ARRAY_INSERT_OP, path: ["items"], index: -1, values: ["a"] },
-    };
-    expect(() => walker.addEvent(event)).toThrow("Invalid index");
-  });
 });
