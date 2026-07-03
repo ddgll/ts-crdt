@@ -55,6 +55,8 @@ export class EgWalker {
 	/** A map of awareness states for connected replicas. */
 	public awarenessStates = new Map<string, unknown>();
 	private eventListeners = new Set<(event: CrdtEvent, isLocal: boolean) => void>();
+	private cachedSortedEvents: CrdtEvent[] = [];
+	private isAtHead = true;
 
 	/**
 	 * Registers a callback to be notified when a new event is applied (either locally or integrated from a remote replica).
@@ -78,6 +80,8 @@ export class EgWalker {
 		this.doc = doc;
 		this.replicaId = replicaId ||
 			Math.random().toString(36).substring(2, 15);
+		this.cachedSortedEvents = this.graph.topologicalSort(this.graph.getEvents(this.graph.getVersion()));
+		this.isAtHead = true;
 	}
 
 	/**
@@ -116,7 +120,13 @@ export class EgWalker {
 			parents: this.graph.getVersion(),
 			op,
 		};
+		
+		if (!this.isAtHead) {
+			this.rebuildStateAtVersion(this.graph.getVersion());
+		}
+
 		this.graph.addEvent(event);
+		this.cachedSortedEvents.push(event);
 		this.applyNewEvent(event);
 		this.eventListeners.forEach((listener) => listener(event, true));
 		return event;
@@ -140,17 +150,27 @@ export class EgWalker {
 			}
 		}
 
-		const currentHeads = new Set(this.graph.getVersion());
-		const isDirectSuccessor = event.parents.length === currentHeads.size &&
-			event.parents.every((p) => currentHeads.has(p));
-
+		const oldSorted = this.cachedSortedEvents;
 		this.graph.addEvent(event);
+		const newSorted = this.graph.topologicalSort(this.graph.getEvents(this.graph.getVersion()));
 
-		if (isDirectSuccessor) {
-			this.applyNewEvent(event);
-		} else {
-			this.rebuildStateAtVersion(this.graph.getVersion());
+		let diffIndex = 0;
+		while (diffIndex < oldSorted.length && oldSorted[diffIndex].id === newSorted[diffIndex].id) {
+			diffIndex++;
 		}
+
+		if (this.isAtHead && diffIndex === oldSorted.length) {
+			for (let i = diffIndex; i < newSorted.length; i++) {
+				this.applyNewEvent(newSorted[i]);
+			}
+		} else {
+			this.doc._setRoot(new YMap(this.doc, []));
+			for (const ev of newSorted) {
+				this.applyNewEvent(ev);
+			}
+		}
+		this.cachedSortedEvents = newSorted;
+		this.isAtHead = true;
 
 		this.eventListeners.forEach((listener) =>
 			listener(event, event.replicaId === this.replicaId)
@@ -314,7 +334,9 @@ export class EgWalker {
 	 * @param events The array of events to integrate.
 	 */
 	integrateRemote(events: CrdtEvent[]) {
-		let stateOutOfSync = false;
+		const oldSorted = this.cachedSortedEvents;
+		let anyAdded = false;
+
 		for (const event of events) {
 			if (this.graph.getEvent(event.id)) {
 				continue;
@@ -326,25 +348,33 @@ export class EgWalker {
 				}
 			}
 
-			const currentHeads = new Set(this.graph.getVersion());
-			const isDirectSuccessor = event.parents.length === currentHeads.size &&
-				event.parents.every((p) => currentHeads.has(p));
-
 			this.graph.addEvent(event);
-
-			if (isDirectSuccessor && !stateOutOfSync) {
-				this.applyNewEvent(event);
-			} else {
-				stateOutOfSync = true;
-			}
+			anyAdded = true;
 
 			this.eventListeners.forEach((listener) =>
 				listener(event, event.replicaId === this.replicaId)
 			);
 		}
 
-		if (stateOutOfSync) {
-			this.rebuildStateAtVersion(this.graph.getVersion());
+		if (anyAdded) {
+			const newSorted = this.graph.topologicalSort(this.graph.getEvents(this.graph.getVersion()));
+			let diffIndex = 0;
+			while (diffIndex < oldSorted.length && oldSorted[diffIndex].id === newSorted[diffIndex].id) {
+				diffIndex++;
+			}
+
+			if (this.isAtHead && diffIndex === oldSorted.length) {
+				for (let i = diffIndex; i < newSorted.length; i++) {
+					this.applyNewEvent(newSorted[i]);
+				}
+			} else {
+				this.doc._setRoot(new YMap(this.doc, []));
+				for (const ev of newSorted) {
+					this.applyNewEvent(ev);
+				}
+			}
+			this.cachedSortedEvents = newSorted;
+			this.isAtHead = true;
 		}
 	}
 
@@ -387,6 +417,8 @@ export class EgWalker {
 
 		const newRoot = YMap.fromJSON(this.doc, [], snapshot.doc);
 		this.doc._setRoot(newRoot);
+		this.cachedSortedEvents = this.graph.topologicalSort(this.graph.getEvents(this.graph.getVersion()));
+		this.isAtHead = true;
 	}
 
 	/**
@@ -404,6 +436,13 @@ export class EgWalker {
 		// Re-apply events in order
 		for (const event of sortedEvents) {
 			this.applyNewEvent(event);
+		}
+
+		if (this.graph.isCriticalVersion(version)) {
+			this.cachedSortedEvents = sortedEvents;
+			this.isAtHead = true;
+		} else {
+			this.isAtHead = false;
 		}
 	}
 
