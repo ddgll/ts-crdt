@@ -28,9 +28,9 @@ export class InMemoryTextRepository implements Repository {
 
     if (row && row.content !== null) {
       const textArray = row.content.split("");
-      this.doc.localInsert(["content"], 0, textArray);
+      this.doc.getMap().getArray("content").insert(0, textArray);
     } else {
-      this.doc.localInsert(["content"], 0, []);
+      this.doc.getMap().getArray("content").insert(0, []);
     }
 
     this.initialized = true;
