@@ -143,7 +143,7 @@ export class EgWalker {
 		}
 
 		this.graph.addEvent(event);
-		this.cachedSortedEvents.push(event);
+		this.cachedSortedEvents = this.graph.getSortedEvents();
 		this.applyNewEvent(event);
 		this.notifyListeners(event, true);
 		return event;
