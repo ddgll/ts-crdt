@@ -407,6 +407,15 @@ export class CrdtServer {
       await this.repository.clearEvents();
       await this.repository.saveEvents([snapshotEvent, ...remainingEvents]);
     }
+
+    // Send snapshot to all clients so they reset their state
+    const snapshotMsg: ServerMessage = { type: "snapshot", data: this.doc.egWalker.getStateSnapshot() };
+    const snapshotMsgString = JSON.stringify(snapshotMsg);
+    for (const client of this.sockets) {
+      if (client.readyState === 1) {
+        client.send(snapshotMsgString);
+      }
+    }
   }
 
   /**

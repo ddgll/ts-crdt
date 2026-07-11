@@ -3,7 +3,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { handleWebSocket, resetServer, Repository, BufferedRepository, InMemoryPubSubAdapter } from "@ddgll/ts-crdt/server";
+import { handleWebSocket, resetServer, Repository, BufferedRepository, InMemoryPubSubAdapter, serverInstances } from "@ddgll/ts-crdt/server";
 import { db } from "./db.js";
 import { SqliteRoomRepository } from "./roomRepository.js";
 import { InMemoryTextRepository } from "./inMemoryTextRepository.js";
@@ -65,6 +65,16 @@ async function initializeServer() {
     await resetServer(roomId);
     console.log(`State and database reset for room ${roomId}`);
     return c.text(`State and database reset for room ${roomId}`);
+  });
+
+  app.get("/api/compact", async (c) => {
+    const roomId = c.req.query("room") || "default";
+    const server = serverInstances.get(roomId);
+    if (server) {
+      await server.compact();
+      return c.text(`Compacted room ${roomId}`);
+    }
+    return c.text(`Room ${roomId} not found`, 404);
   });
 
   app.get(
