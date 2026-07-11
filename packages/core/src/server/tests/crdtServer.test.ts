@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { CrdtServer, Repository, MinimalWebSocket } from "../crdtServer.js";
 import { InMemoryPubSubAdapter } from "../pubSubAdapter.js";
 import { CrdtEvent } from "../../index.js";
@@ -140,6 +140,104 @@ describe("CrdtServer", () => {
 
     // State should remain ["a"], not ["a", "a"]
     expect(server.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
+  });
+});
+
+describe("Security Hardening Limits", () => {
+  it("should reject oversized messages", async () => {
+    const repo = new MockRepository();
+    const server = new CrdtServer("default-room", repo, {
+      maxMessageSize: 100, // Very small limit for testing
+    });
+    await server.initialize();
+
+    const ws1 = new MockWebSocket();
+    await server.handleConnection(ws1);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // Create a message > 100 bytes
+    const largeMessage = JSON.stringify({ type: "dummy", data: "x".repeat(150) });
+    ws1.emit("message", largeMessage);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected oversized message"));
+    expect(repo.events.length).toBe(1); // Only the initial event, nothing was saved
+
+    warnSpy.mockRestore();
+  });
+
+  it("should apply rate limits to sockets", async () => {
+    const repo = new MockRepository();
+    const server = new CrdtServer("default-room", repo, {
+      maxEventsPerSecond: 2,
+    });
+    await server.initialize();
+
+    const ws1 = new MockWebSocket();
+    await server.handleConnection(ws1);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // Send 3 events quickly
+    for (let i = 0; i < 3; i++) {
+      ws1.emit("message", JSON.stringify({ type: "awareness", data: { replicaId: "client1", state: {} } }));
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rate limit exceeded for socket"));
+
+    warnSpy.mockRestore();
+  });
+
+  it("should reject operations that exceed specific limits", async () => {
+    const repo = new MockRepository();
+    const server = new CrdtServer("default-room", repo, {
+      maxArrayInsertSize: 2,
+      maxTextInsertSize: 5,
+      maxValueSize: 10,
+    });
+    await server.initialize();
+
+    const ws1 = new MockWebSocket();
+    await server.handleConnection(ws1);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    // 1. array-insert
+    ws1.emit("message", JSON.stringify({
+      id: "client1:1",
+      replicaId: "client1",
+      parents: [],
+      op: { type: "array-insert", path: [], afterId: null, values: [1, 2, 3] }
+    }));
+
+    // 2. text-insert
+    ws1.emit("message", JSON.stringify({
+      id: "client1:2",
+      replicaId: "client1",
+      parents: [],
+      op: { type: "text-insert", path: [], afterId: null, text: "too long" }
+    }));
+
+    // 3. map-set
+    ws1.emit("message", JSON.stringify({
+      id: "client1:3",
+      replicaId: "client1",
+      parents: [],
+      op: { type: "map-set", path: [], key: "k", value: "this is larger than 10 bytes" }
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(warnSpy).toHaveBeenCalledTimes(3);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected array-insert"));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected text-insert"));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected map-set"));
+
+    warnSpy.mockRestore();
   });
 });
 

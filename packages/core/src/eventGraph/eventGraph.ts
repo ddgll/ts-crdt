@@ -144,6 +144,13 @@ export class EventGraphError extends Error {
 	}
 }
 
+function isValidPath(path: unknown): path is (string | number)[] {
+	if (!Array.isArray(path)) return false;
+	return path.every(segment =>
+		typeof segment === "string" || typeof segment === "number"
+	);
+}
+
 /**
  * Type guard to check if an unknown value is a valid CrdtEvent.
  * @param event The value to check.
@@ -162,16 +169,23 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 	const op = e.op as Record<string, unknown>;
 	switch (op.type) {
 		case MAP_SET_OP:
+			if (!isValidPath((op as unknown as MapSetOperation).path)) return false;
 			if (typeof (op as unknown as MapSetOperation).key !== "string") {
 				return false;
 			}
+			if ((op as unknown as MapSetOperation).key === "__proto__") return false;
+			if ((op as unknown as MapSetOperation).key === "constructor") return false;
 			break;
 		case MAP_DELETE_OP:
+			if (!isValidPath((op as unknown as MapDeleteOperation).path)) return false;
 			if (typeof (op as unknown as MapDeleteOperation).key !== "string") {
 				return false;
 			}
+			if ((op as unknown as MapDeleteOperation).key === "__proto__") return false;
+			if ((op as unknown as MapDeleteOperation).key === "constructor") return false;
 			break;
 		case ARRAY_INSERT_OP:
+			if (!isValidPath((op as unknown as ArrayInsertOperation).path)) return false;
 			if (
 				(op as unknown as ArrayInsertOperation).afterId !== null &&
 				typeof (op as unknown as ArrayInsertOperation).afterId !== "string"
@@ -185,6 +199,7 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			}
 			break;
 		case ARRAY_DELETE_OP:
+			if (!isValidPath((op as unknown as ArrayDeleteOperation).path)) return false;
 			if (
 				!Array.isArray((op as unknown as ArrayDeleteOperation).targetIds)
 			) {
@@ -192,6 +207,7 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			}
 			break;
 		case ARRAY_REPLACE_OP:
+			if (!isValidPath((op as unknown as ArrayReplaceOperation).path)) return false;
 			if (
 				!Array.isArray((op as unknown as ArrayReplaceOperation).values)
 			) {
@@ -199,6 +215,7 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			}
 			break;
 		case TEXT_INSERT_OP:
+			if (!isValidPath((op as unknown as TextInsertOperation).path)) return false;
 			if (
 				(op as unknown as TextInsertOperation).afterId !== null &&
 				typeof (op as unknown as TextInsertOperation).afterId !== "string"
@@ -212,6 +229,7 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			}
 			break;
 		case TEXT_FORMAT_OP:
+			if (!isValidPath((op as unknown as TextFormatOperation).path)) return false;
 			if (
 				!Array.isArray((op as unknown as TextFormatOperation).targetIds)
 			) {
@@ -219,12 +237,13 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			}
 			if (
 				typeof (op as unknown as TextFormatOperation).attributes !==
-					"object"
+					"object" || (op as unknown as TextFormatOperation).attributes === null
 			) {
 				return false;
 			}
 			break;
 		case TEXT_DELETE_OP:
+			if (!isValidPath((op as unknown as TextDeleteOperation).path)) return false;
 			if (
 				!Array.isArray((op as unknown as TextDeleteOperation).targetIds)
 			) {

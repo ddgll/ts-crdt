@@ -116,5 +116,46 @@ describe("eventGraph", () => {
       };
       expect(isCrdtEvent(event)).toBe(false);
     });
+
+    // Security path tests
+    it("should return false for object-typed path segments", () => {
+      const event = {
+        id: "1",
+        replicaId: "A",
+        parents: [],
+        op: { type: MAP_SET_OP, path: [{}], key: "a", value: 1 },
+      };
+      expect(isCrdtEvent(event)).toBe(false);
+    });
+    
+    it("should return false for map-set with __proto__ key", () => {
+      const event = {
+        id: "1",
+        replicaId: "A",
+        parents: [],
+        op: { type: MAP_SET_OP, path: [], key: "__proto__", value: {} },
+      };
+      expect(isCrdtEvent(event)).toBe(false);
+    });
+
+    it("should return false for map-delete with constructor key", () => {
+      const event = {
+        id: "1",
+        replicaId: "A",
+        parents: [],
+        op: { type: "map-delete", path: [], key: "constructor" },
+      };
+      expect(isCrdtEvent(event)).toBe(false);
+    });
+
+    it("should return true for valid paths", () => {
+      const event = {
+        id: "1",
+        replicaId: "A",
+        parents: [],
+        op: { type: MAP_SET_OP, path: ["content", 0, "text"], key: "a", value: 1 },
+      };
+      expect(isCrdtEvent(event)).toBe(true);
+    });
   });
 });

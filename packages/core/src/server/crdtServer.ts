@@ -43,6 +43,16 @@ export interface CrdtServerOptions {
   pubSub?: PubSubAdapter;
   /** The number of new events before the server triggers a compaction of the event graph. */
   compactionThreshold?: number;
+  /** Maximum size of a single WebSocket message in bytes. Default: 1MB */
+  maxMessageSize?: number;
+  /** Maximum number of values in an array-insert operation. Default: 10,000 */
+  maxArrayInsertSize?: number;
+  /** Maximum text length in a text-insert operation. Default: 100,000 */
+  maxTextInsertSize?: number;
+  /** Maximum value size for a map-set operation in bytes. Default: 100KB */
+  maxValueSize?: number;
+  /** Maximum events per second per socket. Default: 100 */
+  maxEventsPerSecond?: number;
 }
 
 /**
@@ -60,6 +70,7 @@ export class CrdtServer {
   private unsubscribeFromPubSub: (() => void) | null = null;
   private socketReplicaIds = new Map<MinimalWebSocket, Set<string>>();
   private compactionThreshold?: number;
+  private options?: CrdtServerOptions;
   private eventCountSinceCompaction = 0;
 
   constructor(roomId: string, repository: Repository, options?: CrdtServerOptions) {
@@ -68,6 +79,7 @@ export class CrdtServer {
     this.repository = repository;
     this.pubSub = options?.pubSub;
     this.compactionThreshold = options?.compactionThreshold;
+    this.options = options;
   }
 
   /**
@@ -153,9 +165,29 @@ export class CrdtServer {
     const snapshotMsg: ServerMessage = { type: "snapshot", data: snapshot };
     socket.send(JSON.stringify(snapshotMsg));
 
+    const eventTimestamps: number[] = [];
+    const maxRate = this.options?.maxEventsPerSecond ?? 100;
+    const maxSize = this.options?.maxMessageSize ?? 1_048_576; // 1MB
+
     socket.on("message", async (data: unknown) => {
       try {
         const messageString = typeof data === "string" ? data : String(data);
+        
+        if (messageString.length > maxSize) {
+          console.warn(`Rejected oversized message: ${messageString.length} bytes`);
+          return;
+        }
+
+        const now = Date.now();
+        eventTimestamps.push(now);
+        while (eventTimestamps.length > 0 && eventTimestamps[0] < now - 1000) {
+          eventTimestamps.shift();
+        }
+        if (eventTimestamps.length > maxRate) {
+          console.warn(`Rate limit exceeded for socket, dropping event`);
+          return;
+        }
+
         const parsed = JSON.parse(messageString);
 
         if (parsed.type === "awareness") {
@@ -198,6 +230,27 @@ export class CrdtServer {
         if (!isCrdtEvent(event)) {
           console.warn("Rejected invalid event from client:", event);
           return;
+        }
+
+        // Operation-specific size limits
+        if (event.op.type === "array-insert") {
+          const maxArraySize = this.options?.maxArrayInsertSize ?? 10_000;
+          if (event.op.values.length > maxArraySize) {
+            console.warn(`Rejected array-insert with ${event.op.values.length} values`);
+            return;
+          }
+        } else if (event.op.type === "text-insert") {
+          const maxTextSize = this.options?.maxTextInsertSize ?? 100_000;
+          if (event.op.text.length > maxTextSize) {
+            console.warn(`Rejected text-insert with ${event.op.text.length} chars`);
+            return;
+          }
+        } else if (event.op.type === "map-set") {
+          const maxValueSize = this.options?.maxValueSize ?? 102_400; // 100KB
+          if (JSON.stringify(event.op.value).length > maxValueSize) {
+            console.warn(`Rejected map-set with value size exceeding limit`);
+            return;
+          }
         }
 
         let eventIds = this.socketReplicaIds.get(socket);
