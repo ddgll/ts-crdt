@@ -14,7 +14,7 @@ describe("EgWalker.addEvent", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
     const event: CrdtEvent = {
-      id: "1",
+      id: "r1:1",
       replicaId: "r1",
       parents: [],
       op: { type: MAP_SET_OP, path: [], key: "foo", value: "bar" },
@@ -28,7 +28,7 @@ describe("EgWalker.addEvent", () => {
     const walker = doc.egWalker;
     const items = doc.getMap().getArray("items");
     const event: CrdtEvent = {
-      id: "1",
+      id: "r1:1",
       replicaId: "r1",
       parents: [],
       op: { type: ARRAY_INSERT_OP, path: ["items"], afterId: null, values: ["a"] },
@@ -45,7 +45,7 @@ describe("EgWalker.addEvent", () => {
 
     const insertEvent = doc.egWalker.getStateSnapshot().graph.events.find(e => e[1].op.type === ARRAY_INSERT_OP)?.[1];
     const deleteEvent: CrdtEvent = {
-      id: "4", // after 3 inserts
+      id: "r1:4", // after 3 inserts
       replicaId: "r1",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       parents: (walker as any)["graph"].getVersion(),
@@ -59,7 +59,7 @@ describe("EgWalker.addEvent", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
     const event: CrdtEvent = {
-      id: "1",
+      id: "r1:1",
       replicaId: "r1",
       parents: ["non-existent"],
       op: { type: ARRAY_INSERT_OP, path: ["items"], afterId: null, values: ["a"] },
@@ -73,7 +73,7 @@ describe("EgWalker.addEvent", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
     const event: CrdtEvent = {
-      id: "1",
+      id: "r1:1",
       replicaId: "r1",
       parents: [],
       op: { type: MAP_SET_OP, path: [], key: "foo", value: "bar" },
@@ -87,7 +87,7 @@ describe("EgWalker.addEvent", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
     const event: CrdtEvent = {
-      id: "1",
+      id: "r1:1",
       replicaId: "r1",
       parents: [],
       op: {

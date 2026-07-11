@@ -267,6 +267,8 @@ export class EventGraph {
 	private events = new Map<EventID, CrdtEvent>();
 	private children = new Map<EventID, Set<EventID>>();
 	private heads = new Set<EventID>();
+	private sortedEvents: CrdtEvent[] = [];
+	private lastCriticalVersionCache: EventID[] | null = null;
 
 	/**
 	 * Adds a new event to the graph after validating it.
@@ -308,6 +310,34 @@ export class EventGraph {
 			}
 			this.children.get(parentId)!.add(event.id);
 		}
+
+		// Incremental sort: try fast append
+		if (this.canAppend(event)) {
+			this.sortedEvents.push(event);
+		} else {
+			// Full re-sort needed — cache invalidation
+			this.sortedEvents = this.topologicalSort(this.getAllEvents());
+		}
+
+		// Invalidate cache if the graph now has multiple heads
+		if (this.heads.size > 1) {
+			this.lastCriticalVersionCache = null;
+		} else if (this.heads.size === 1) {
+			this.lastCriticalVersionCache = [Array.from(this.heads)[0]];
+		}
+	}
+
+	private canAppend(event: CrdtEvent): boolean {
+		if (this.sortedEvents.length === 0) return true;
+		const lastId = this.sortedEvents[this.sortedEvents.length - 1].id;
+		return compareEventIds(event.id, lastId) > 0;
+	}
+
+	/**
+	 * Gets the incrementally maintained sorted events list.
+	 */
+	getSortedEvents(): CrdtEvent[] {
+		return this.sortedEvents;
 	}
 
 	/**
@@ -427,6 +457,15 @@ export class EventGraph {
 	 * @returns The event IDs of the last single-headed version, or an empty array if not found.
 	 */
 	getLastCriticalVersion(): EventID[] {
+		if (this.lastCriticalVersionCache !== null) {
+			return this.lastCriticalVersionCache;
+		}
+		const result = this._computeLastCriticalVersion();
+		this.lastCriticalVersionCache = result;
+		return result;
+	}
+
+	private _computeLastCriticalVersion(): EventID[] {
 		const currentVersionIds = this.getVersion();
 		if (currentVersionIds.length === 0) return [];
 		if (currentVersionIds.length === 1) {
@@ -528,14 +567,33 @@ export class EventGraph {
 	 * @returns An array of events that have occurred since the given version.
 	 */
 	getChangesSince(version: EventID[]): CrdtEvent[] {
-		const knownEvents = this.getEvents(version);
-		const knownEventIds = new Set(knownEvents.map((e) => e.id));
+		if (version.length === 0) {
+			return Array.from(this.events.values());
+		}
 
-		const allEvents = Array.from(this.events.values());
-		const changes = allEvents.filter((event) =>
-			!knownEventIds.has(event.id)
-		);
+		// Build set of all ancestors of the version (including the version itself)
+		const ancestors = new Set<EventID>(version);
+		const stack = [...version];
+		while (stack.length > 0) {
+			const id = stack.pop()!;
+			const event = this.events.get(id);
+			if (event) {
+				for (const parentId of event.parents) {
+					if (!ancestors.has(parentId)) {
+						ancestors.add(parentId);
+						stack.push(parentId);
+					}
+				}
+			}
+		}
 
+		// Single pass: collect events not in the ancestor set
+		const changes: CrdtEvent[] = [];
+		for (const event of this.events.values()) {
+			if (!ancestors.has(event.id)) {
+				changes.push(event);
+			}
+		}
 		return changes;
 	}
 

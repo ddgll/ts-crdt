@@ -57,13 +57,13 @@ export class YText {
 	 * @returns The plain text content.
 	 */
 	toString(): string {
-		let result = "";
+		const chars: string[] = [];
 		for (const item of this._data) {
 			if (!item.isDeleted) {
-				result += item.char;
+				chars.push(item.char);
 			}
 		}
-		return result;
+		return chars.join('');
 	}
 
 	/**

@@ -27,6 +27,7 @@ export class YArray {
 	private _path: (string | number)[];
 	private _data: YArrayItem[];
 	private _idIndex: Map<string, number>;
+	private _activeCount: number;
 
 	/**
 	 * Creates a new YArray instance.
@@ -39,13 +40,14 @@ export class YArray {
 		this._path = path;
 		this._data = [];
 		this._idIndex = new Map();
+		this._activeCount = 0;
 	}
 
 	/**
 	 * Gets the number of non-deleted elements in the array.
 	 */
 	get length(): number {
-		return this._data.filter(i => !i.isDeleted).length;
+		return this._activeCount;
 	}
 
 	/**
@@ -158,6 +160,7 @@ export class YArray {
 		for (let i = insertIdx; i < this._data.length; i++) {
 			this._idIndex.set(this._data[i].id, i);
 		}
+		this._activeCount += values.length;
 	}
 
 	/**
@@ -169,7 +172,10 @@ export class YArray {
 		for (const id of targetIds) {
 			const idx = this._idIndex.get(id);
 			if (idx !== undefined) {
-				this._data[idx].isDeleted = true;
+				if (!this._data[idx].isDeleted) {
+					this._data[idx].isDeleted = true;
+					this._activeCount--;
+				}
 			}
 		}
 	}
@@ -185,6 +191,7 @@ export class YArray {
 		for (const item of this._data) {
 			item.isDeleted = true;
 		}
+		this._activeCount = values.length;
 		// Insert new values at the end (or anywhere, since everything else is deleted)
 		const newItems: YArrayItem[] = values.map((val, i) => ({
 			id: `${eventId}:${i}`,
@@ -291,6 +298,7 @@ export class YArray {
 		for (let i = 0; i < arr._data.length; i++) {
 			arr._idIndex.set(arr._data[i].id, i);
 		}
+		arr._activeCount = arr._data.length;
 		return arr;
 	}
 }

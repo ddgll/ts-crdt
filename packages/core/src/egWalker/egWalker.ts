@@ -97,7 +97,7 @@ export class EgWalker {
 		this.doc = doc;
 		this.replicaId = replicaId ||
 			Math.random().toString(36).substring(2, 15);
-		this.cachedSortedEvents = this.graph.topologicalSort(this.graph.getEvents(this.graph.getVersion()));
+		this.cachedSortedEvents = this.graph.getSortedEvents();
 		this.isAtHead = true;
 	}
 
@@ -154,7 +154,7 @@ export class EgWalker {
 	 * Returns the list of events that were actually new (not duplicates).
 	 */
 	private _ingestEvents(events: CrdtEvent[]): CrdtEvent[] {
-		const oldSorted = this.cachedSortedEvents;
+		const oldSorted = [...this.cachedSortedEvents];
 		const addedEvents: CrdtEvent[] = [];
 
 		for (const event of events) {
@@ -173,7 +173,7 @@ export class EgWalker {
 		}
 
 		if (addedEvents.length > 0) {
-			const newSorted = this.graph.topologicalSort(this.graph.getEvents(this.graph.getVersion()));
+			const newSorted = this.graph.getSortedEvents();
 			let diffIndex = 0;
 			while (diffIndex < oldSorted.length && oldSorted[diffIndex].id === newSorted[diffIndex].id) {
 				diffIndex++;
@@ -410,7 +410,7 @@ export class EgWalker {
 
 		const newRoot = YMap.fromJSON(this.doc, [], snapshot.doc);
 		this.doc._setRoot(newRoot);
-		this.cachedSortedEvents = this.graph.topologicalSort(this.graph.getEvents(this.graph.getVersion()));
+		this.cachedSortedEvents = this.graph.getSortedEvents();
 		this.isAtHead = true;
 	}
 
