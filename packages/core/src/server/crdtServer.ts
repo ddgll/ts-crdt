@@ -76,6 +76,7 @@ export class CrdtServer {
   private eventCountSinceCompaction = 0;
   private messageQueue: (() => Promise<void>)[] = [];
   private isProcessingQueue = false;
+  private isCompacting = false;
 
   private async processQueue() {
     if (this.isProcessingQueue) return;
@@ -309,8 +310,10 @@ export class CrdtServer {
 
           this.eventCountSinceCompaction++;
           if (this.compactionThreshold && this.eventCountSinceCompaction >= this.compactionThreshold) {
-            this.eventCountSinceCompaction = 0;
-            await this.compact();
+            if (!this.isCompacting) {
+              this.eventCountSinceCompaction = 0;
+              await this.compact();
+            }
           }
         } catch (err) {
           console.error("Error processing message:", err);
@@ -402,8 +405,11 @@ export class CrdtServer {
    * Compacts the event graph to reduce memory usage and repository size.
    */
   async compact(): Promise<void> {
-    const version = this.doc.egWalker.graph.getLastCriticalVersion();
-    if (version.length === 0) return; // Cannot compact without a critical version
+    if (this.isCompacting) return;
+    this.isCompacting = true;
+    try {
+      const version = this.doc.egWalker.graph.getLastCriticalVersion();
+      if (version.length === 0) return; // Cannot compact without a critical version
 
     // Rebuild the state exactly at the critical version to create the snapshot
     const tempDoc = new Doc();
@@ -442,6 +448,9 @@ export class CrdtServer {
       if (client.readyState === 1) {
         client.send(snapshotMsgString);
       }
+    }
+    } finally {
+      this.isCompacting = false;
     }
   }
 
