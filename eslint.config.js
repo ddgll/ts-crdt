@@ -9,7 +9,16 @@ export default [
   pluginJs.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    ignores: ["packages/demo/interactive-test/**", "**/dist/**", "packages/demo/dist/**"],
+  },
+  {
     rules: {
+      "@typescript-eslint/consistent-type-assertions": [
+        "error",
+        {
+          assertionStyle: "never",
+        },
+      ],
       "@typescript-eslint/no-unused-vars": [
         "error",
         {
@@ -18,6 +27,12 @@ export default [
           caughtErrorsIgnorePattern: "^_",
         },
       ],
+    },
+  },
+  {
+    files: ["**/*.test.ts", "**/*.bench.ts"],
+    rules: {
+      "@typescript-eslint/consistent-type-assertions": "off",
     },
   },
 ];

@@ -311,36 +311,39 @@ export class YArray {
 			const itemPath = [...path, i];
 			let parsedValue = itemData;
 			if (
-				itemData &&
-				typeof itemData === "object" &&
+				isRecord(itemData) &&
 				"__crdt_type" in itemData &&
 				"data" in itemData
 			) {
-				const { __crdt_type, data } = itemData as {
-					__crdt_type: string;
-					data: unknown;
-				};
+				const __crdt_type = itemData.__crdt_type;
+				const data = itemData.data;
 				switch (__crdt_type) {
 					case "YMap":
-						parsedValue = YMap.fromJSON(
-							doc,
-							itemPath,
-							data as Record<string, unknown>,
-						);
+						if (isRecord(data)) {
+							parsedValue = YMap.fromJSON(
+								doc,
+								itemPath,
+								data,
+							);
+						}
 						break;
 					case "YArray":
-						parsedValue = YArray.fromJSON(
-							doc,
-							itemPath,
-							data as unknown[],
-						);
+						if (isUnknownArray(data)) {
+							parsedValue = YArray.fromJSON(
+								doc,
+								itemPath,
+								data,
+							);
+						}
 						break;
 					case "YText":
-						parsedValue = YText.fromString(
-							doc,
-							itemPath,
-							data as string,
-						);
+						if (isString(data)) {
+							parsedValue = YText.fromString(
+								doc,
+								itemPath,
+								data,
+							);
+						}
 						break;
 				}
 			}
@@ -371,37 +374,44 @@ export class YArray {
 		snapshot: unknown[],
 	): YArray {
 		const arr = new YArray(doc, path);
-		arr._data = (snapshot as { id: string; value: unknown; isDeleted: boolean }[]).map((itemData, i) => {
+		arr._data = snapshot.map((itemData, i) => {
+			if (!isSnapshotItem(itemData)) return { id: "", value: null, isDeleted: true };
 			const itemPath = [...path, i];
 			let parsedValue = itemData.value;
 			if (
-				itemData.value &&
-				typeof itemData.value === "object" &&
+				isRecord(itemData.value) &&
 				"__crdt_type" in itemData.value &&
 				"data" in itemData.value
 			) {
-				const { __crdt_type, data } = itemData.value;
+				const __crdt_type = itemData.value.__crdt_type;
+				const data = itemData.value.data;
 				switch (__crdt_type) {
 					case "YMap":
-						parsedValue = YMap.fromSnapshot(
-							doc,
-							itemPath,
-							data as Record<string, unknown>,
-						);
+						if (isRecord(data)) {
+							parsedValue = YMap.fromSnapshot(
+								doc,
+								itemPath,
+								data,
+							);
+						}
 						break;
 					case "YArray":
-						parsedValue = YArray.fromSnapshot(
-							doc,
-							itemPath,
-							data as unknown[],
-						);
+						if (isUnknownArray(data)) {
+							parsedValue = YArray.fromSnapshot(
+								doc,
+								itemPath,
+								data,
+							);
+						}
 						break;
 					case "YText":
-						parsedValue = YText.fromSnapshot(
-							doc,
-							itemPath,
-							data as unknown[],
-						);
+						if (isUnknownArray(data)) {
+							parsedValue = YText.fromSnapshot(
+								doc,
+								itemPath,
+								data,
+							);
+						}
 						break;
 				}
 			}
@@ -421,4 +431,20 @@ export class YArray {
 		arr._activeCount = activeCount;
 		return arr;
 	}
+}
+
+function isRecord(val: unknown): val is Record<string, unknown> {
+	return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+
+function isUnknownArray(val: unknown): val is unknown[] {
+	return Array.isArray(val);
+}
+
+function isString(val: unknown): val is string {
+	return typeof val === "string";
+}
+
+function isSnapshotItem(val: unknown): val is { id: string; value: unknown; isDeleted: boolean } {
+	return isRecord(val) && typeof val.id === "string" && typeof val.isDeleted === "boolean";
 }

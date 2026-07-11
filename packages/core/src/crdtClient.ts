@@ -1,4 +1,4 @@
-import { Doc, ServerMessage, YArray, YText, YMap, CrdtEvent } from "./index.js";
+import { Doc, ServerMessage, YArray, YText, YMap } from "./index.js";
 
 /**
  * Minimal WebSocket interface required by CrdtClient.
@@ -52,7 +52,7 @@ export class CrdtClient {
     this.handleMessageRef = (msgEvent: { data: unknown }) => {
       try {
         const msgStr = typeof msgEvent.data === "string" ? msgEvent.data : String(msgEvent.data);
-        const parsed = JSON.parse(msgStr) as ServerMessage;
+        const parsed: ServerMessage = JSON.parse(msgStr);
 
         this.isApplyingRemote = true;
 
@@ -60,14 +60,14 @@ export class CrdtClient {
           this.doc.egWalker.loadStateSnapshot(parsed.data);
           this.notifyListeners("snapshot", parsed.data);
         } else if (parsed.type === "event") {
-          const event = parsed.data as CrdtEvent;
+          const event = parsed.data;
           // Avoid integrating our own events if they are broadcasted back
           if (event.replicaId !== this.doc.egWalker.getReplicaId()) {
             this.doc.egWalker.integrateRemote([event]);
           }
           this.notifyListeners("event", event);
         } else if (parsed.type === "awareness") {
-          const { replicaId, state } = parsed.data as { replicaId: string, state: unknown };
+          const { replicaId, state } = parsed.data;
           if (replicaId !== this.doc.egWalker.getReplicaId()) {
             this.doc.egWalker.awarenessStates.set(replicaId, state);
           }
@@ -153,9 +153,9 @@ export class CrdtClient {
     let current: unknown = this.doc.getMap();
     for (const segment of path) {
       if (current instanceof YMap) {
-        current = current.get(segment as string);
+        current = current.get(String(segment));
       } else if (current instanceof YArray) {
-        current = current.get(segment as number);
+        current = current.get(Number(segment));
       } else {
         return undefined;
       }

@@ -269,9 +269,9 @@ export class CrdtServer {
 
           let event: CrdtEvent;
           if (parsed.id && parsed.replicaId) {
-            event = parsed as CrdtEvent;
+            event = parsed;
           } else if (parsed.type === "event") {
-            event = parsed.data as CrdtEvent;
+            event = parsed.data;
           } else {
             return;
           }
@@ -453,7 +453,8 @@ export class CrdtServer {
       tempDoc.egWalker.integrateRemote(eventsToApply);
       // Perform garbage collection to remove tombstones before saving snapshot
       tempDoc.gc(true);
-      const snapshotState = tempDoc.getSnapshot() as Record<string, unknown>;
+      const snap = tempDoc.getSnapshot();
+      const snapshotState = isRecord(snap) ? snap : {};
 
       const { snapshotEvent, remainingEvents } = this.doc.egWalker.graph.compact(
         version,
@@ -556,3 +557,8 @@ export async function resetServer(roomId: string): Promise<void> {
     await server.reset();
   }
 }
+
+function isRecord(val: unknown): val is Record<string, unknown> {
+  return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+

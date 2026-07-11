@@ -384,15 +384,26 @@ export class YText {
 		snapshot: unknown[],
 	): YText {
 		const ytext = new YText(doc, path);
-		ytext._data = (snapshot as { id: string, char: string, isDeleted: boolean, attributes: Record<string, unknown> }[]).map((item) => ({
-			id: item.id,
-			char: item.char,
-			isDeleted: item.isDeleted,
-			attributes: { ...item.attributes }
-		}));
+		ytext._data = snapshot.map((item) => {
+			if (!isYTextSnapshotItem(item)) return { id: "", char: "", isDeleted: true, attributes: {} };
+			return {
+				id: item.id,
+				char: item.char,
+				isDeleted: item.isDeleted,
+				attributes: { ...item.attributes }
+			};
+		});
 		for (let i = 0; i < ytext._data.length; i++) {
 			ytext._idIndex.set(ytext._data[i].id, i);
 		}
 		return ytext;
 	}
+}
+
+function isRecord(val: unknown): val is Record<string, unknown> {
+	return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+
+function isYTextSnapshotItem(val: unknown): val is { id: string, char: string, isDeleted: boolean, attributes: Record<string, unknown> } {
+	return isRecord(val) && typeof val.id === "string" && typeof val.char === "string" && typeof val.isDeleted === "boolean" && isRecord(val.attributes);
 }

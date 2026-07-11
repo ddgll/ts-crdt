@@ -31,8 +31,7 @@ async function globalSetup() {
     console.error(`server error: ${data}`);
   });
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (global as any).__SERVER_PROCESS__ = serverProcess;
+  Reflect.set(global, "__SERVER_PROCESS__", serverProcess);
 
   await sleep(5000); // Wait for the server to be ready
 }

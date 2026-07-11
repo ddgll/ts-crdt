@@ -278,40 +278,46 @@ export class YMap {
 	): YMap {
 		const map = new YMap(doc, path);
 		for (const key in json) {
-			const value = json[key] as
-				| { __crdt_type: string; data: Record<string, unknown> }
-				| Record<string, unknown>;
-			if (value && typeof value === "object" && "__crdt_type" in value) {
-				switch (value.__crdt_type) {
+			const value = json[key];
+			if (isRecord(value) && "__crdt_type" in value) {
+				const __crdt_type = value.__crdt_type;
+				const data = value.data;
+				switch (__crdt_type) {
 					case "YMap":
-						map._applySet(
-							key,
-							YMap.fromJSON(
-								doc,
-								[...path, key],
-								value.data as Record<string, unknown>,
-							),
-						);
+						if (isRecord(data)) {
+							map._applySet(
+								key,
+								YMap.fromJSON(
+									doc,
+									[...path, key],
+									data,
+								),
+							);
+						}
 						break;
 					case "YArray":
-						map._applySet(
-							key,
-							YArray.fromJSON(
-								doc,
-								[...path, key],
-								value.data as unknown[],
-							),
-						);
+						if (isUnknownArray(data)) {
+							map._applySet(
+								key,
+								YArray.fromJSON(
+									doc,
+									[...path, key],
+									data,
+								),
+							);
+						}
 						break;
 					case "YText":
-						map._applySet(
-							key,
-							YText.fromString(
-								doc,
-								[...path, key],
-								value.data as string,
-							),
-						);
+						if (isString(data)) {
+							map._applySet(
+								key,
+								YText.fromString(
+									doc,
+									[...path, key],
+									data,
+								),
+							);
+						}
 						break;
 				}
 			} else {
@@ -336,34 +342,40 @@ export class YMap {
 	): YMap {
 		const map = new YMap(doc, path);
 		for (const key in snapshot) {
-			const wrapper = snapshot[key] as { value: unknown; eventId?: string };
-			const value = wrapper.value as
-				| { __crdt_type: string; data: unknown }
-				| unknown;
+			const wrapper = snapshot[key];
+			if (!isSnapshotWrapper(wrapper)) continue;
+			const value = wrapper.value;
 			let parsedValue = value;
-			if (value && typeof value === "object" && "__crdt_type" in value) {
-				const typedValue = value as { __crdt_type: string; data: unknown };
-				switch (typedValue.__crdt_type) {
+			if (isRecord(value) && "__crdt_type" in value) {
+				const __crdt_type = value.__crdt_type;
+				const data = value.data;
+				switch (__crdt_type) {
 					case "YMap":
-						parsedValue = YMap.fromSnapshot(
-							doc,
-							[...path, key],
-							typedValue.data as Record<string, unknown>,
-						);
+						if (isRecord(data)) {
+							parsedValue = YMap.fromSnapshot(
+								doc,
+								[...path, key],
+								data,
+							);
+						}
 						break;
 					case "YArray":
-						parsedValue = YArray.fromSnapshot(
-							doc,
-							[...path, key],
-							typedValue.data as unknown[],
-						);
+						if (isUnknownArray(data)) {
+							parsedValue = YArray.fromSnapshot(
+								doc,
+								[...path, key],
+								data,
+							);
+						}
 						break;
 					case "YText":
-						parsedValue = YText.fromSnapshot(
-							doc,
-							[...path, key],
-							typedValue.data as unknown[],
-						);
+						if (isUnknownArray(data)) {
+							parsedValue = YText.fromSnapshot(
+								doc,
+								[...path, key],
+								data,
+							);
+						}
 						break;
 				}
 			}
@@ -371,4 +383,20 @@ export class YMap {
 		}
 		return map;
 	}
+}
+
+function isRecord(val: unknown): val is Record<string, unknown> {
+	return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+
+function isUnknownArray(val: unknown): val is unknown[] {
+	return Array.isArray(val);
+}
+
+function isString(val: unknown): val is string {
+	return typeof val === "string";
+}
+
+function isSnapshotWrapper(val: unknown): val is { value: unknown; eventId?: string } {
+	return isRecord(val) && (typeof val.eventId === "string" || val.eventId === undefined);
 }

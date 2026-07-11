@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { SqliteRoomRepository } from "../roomRepository.js";
 import { db } from "../db.js";
 import * as schema from "../db/schema.js";
-import { eq } from "drizzle-orm";
 
 describe("SqliteRoomRepository", () => {
   it("should validate and filter loaded events via getEvents", async () => {

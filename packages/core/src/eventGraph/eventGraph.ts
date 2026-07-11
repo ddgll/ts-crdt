@@ -138,104 +138,64 @@ function isValidPath(path: unknown): path is (string | number)[] {
 	);
 }
 
+function isRecord(obj: unknown): obj is Record<string, unknown> {
+	return typeof obj === "object" && obj !== null;
+}
+
 /**
  * Type guard to check if an unknown value is a valid CrdtEvent.
  * @param event The value to check.
  * @returns True if the value is a CrdtEvent, false otherwise.
  */
 export function isCrdtEvent(event: unknown): event is CrdtEvent {
-	if (typeof event !== "object" || event === null) {
+	if (!isRecord(event)) {
 		return false;
 	}
-	const e = event as Record<string, unknown>;
+	const e = event;
 	if (typeof e.id !== "string" || !/^[^:]+:\d+$/.test(e.id)) return false;
 	if (typeof e.replicaId !== "string") return false;
 	if (!Array.isArray(e.parents)) return false;
 	if (!e.parents.every((p: unknown) => typeof p === "string" && /^[^:]+:\d+$/.test(p))) return false;
-	if (typeof e.op !== "object" || e.op === null) return false;
-	const op = e.op as Record<string, unknown>;
+	if (!isRecord(e.op)) return false;
+	const op = e.op;
 	switch (op.type) {
 		case MAP_SET_OP:
-			if (!isValidPath((op as unknown as MapSetOperation).path)) return false;
-			if (typeof (op as unknown as MapSetOperation).key !== "string") {
-				return false;
-			}
-			if ((op as unknown as MapSetOperation).key === "__proto__") return false;
-			if ((op as unknown as MapSetOperation).key === "constructor") return false;
+			if (!isValidPath(op.path)) return false;
+			if (typeof op.key !== "string") return false;
+			if (op.key === "__proto__") return false;
+			if (op.key === "constructor") return false;
 			break;
 		case MAP_DELETE_OP:
-			if (!isValidPath((op as unknown as MapDeleteOperation).path)) return false;
-			if (typeof (op as unknown as MapDeleteOperation).key !== "string") {
-				return false;
-			}
-			if ((op as unknown as MapDeleteOperation).key === "__proto__") return false;
-			if ((op as unknown as MapDeleteOperation).key === "constructor") return false;
+			if (!isValidPath(op.path)) return false;
+			if (typeof op.key !== "string") return false;
+			if (op.key === "__proto__") return false;
+			if (op.key === "constructor") return false;
 			break;
 		case ARRAY_INSERT_OP:
-			if (!isValidPath((op as unknown as ArrayInsertOperation).path)) return false;
-			if (
-				(op as unknown as ArrayInsertOperation).afterId !== null &&
-				typeof (op as unknown as ArrayInsertOperation).afterId !== "string"
-			) {
-				return false;
-			}
-			if (
-				!Array.isArray((op as unknown as ArrayInsertOperation).values)
-			) {
-				return false;
-			}
+			if (!isValidPath(op.path)) return false;
+			if (op.afterId !== null && typeof op.afterId !== "string") return false;
+			if (!Array.isArray(op.values)) return false;
 			break;
 		case ARRAY_DELETE_OP:
-			if (!isValidPath((op as unknown as ArrayDeleteOperation).path)) return false;
-			if (
-				!Array.isArray((op as unknown as ArrayDeleteOperation).targetIds)
-			) {
-				return false;
-			}
+			if (!isValidPath(op.path)) return false;
+			if (!Array.isArray(op.targetIds)) return false;
 			break;
 		case TEXT_INSERT_OP:
-			if (!isValidPath((op as unknown as TextInsertOperation).path)) return false;
-			if (
-				(op as unknown as TextInsertOperation).afterId !== null &&
-				typeof (op as unknown as TextInsertOperation).afterId !== "string"
-			) {
-				return false;
-			}
-			if (
-				typeof (op as unknown as TextInsertOperation).text !== "string"
-			) {
-				return false;
-			}
+			if (!isValidPath(op.path)) return false;
+			if (op.afterId !== null && typeof op.afterId !== "string") return false;
+			if (typeof op.text !== "string") return false;
 			break;
 		case TEXT_FORMAT_OP:
-			if (!isValidPath((op as unknown as TextFormatOperation).path)) return false;
-			if (
-				!Array.isArray((op as unknown as TextFormatOperation).targetIds)
-			) {
-				return false;
-			}
-			if (
-				typeof (op as unknown as TextFormatOperation).attributes !==
-					"object" || (op as unknown as TextFormatOperation).attributes === null
-			) {
-				return false;
-			}
+			if (!isValidPath(op.path)) return false;
+			if (!Array.isArray(op.targetIds)) return false;
+			if (!isRecord(op.attributes)) return false;
 			break;
 		case TEXT_DELETE_OP:
-			if (!isValidPath((op as unknown as TextDeleteOperation).path)) return false;
-			if (
-				!Array.isArray((op as unknown as TextDeleteOperation).targetIds)
-			) {
-				return false;
-			}
+			if (!isValidPath(op.path)) return false;
+			if (!Array.isArray(op.targetIds)) return false;
 			break;
 		case SNAPSHOT_OP:
-			if (
-				typeof (op as unknown as SnapshotOperation).state !== "object" ||
-				(op as unknown as SnapshotOperation).state === null
-			) {
-				return false;
-			}
+			if (!isRecord(op.state)) return false;
 			break;
 		default:
 			return false;

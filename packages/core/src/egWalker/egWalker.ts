@@ -262,7 +262,8 @@ export class EgWalker {
 			let next: YMap | YArray | YText | undefined;
 
 			if (current instanceof YMap) {
-				const wrapper: { value: unknown, eventId: string } | undefined = current._getWrapper(key as string) as { value: unknown, eventId: string } | undefined;
+				const strKey = String(key);
+				const wrapper = current._getWrapper(strKey);
 				const val: unknown = wrapper?.value;
 
 				if (val instanceof YMap || val instanceof YArray || val instanceof YText) {
@@ -284,11 +285,11 @@ export class EgWalker {
 						} else {
 							next = new YMap(this.doc, newPath);
 						}
-						const undoSet = current._applySet(key as string, next, event.id);
+						const undoSet = current._applySet(strKey, next, event.id);
 						if (undoSet) undoActions.push(undoSet);
 
 						// If the container failed to attach due to LWW conflict, halt traversal gracefully
-						if (current._getWrapper(key as string)?.eventId !== event.id) {
+						if (current._getWrapper(strKey)?.eventId !== event.id) {
 							return () => {
 								for (let j = undoActions.length - 1; j >= 0; j--) {
 									undoActions[j]();
@@ -326,11 +327,11 @@ export class EgWalker {
 						// For intermediate paths, always create a YMap.
 						next = new YMap(this.doc, newPath);
 					}
-					const undoSet = current._applySet(key as string, next, event.id);
+					const undoSet = current._applySet(strKey, next, event.id);
 					if (undoSet) undoActions.push(undoSet);
 
 					// If the container failed to attach due to LWW conflict, halt traversal gracefully
-					if (current._getWrapper(key as string)?.eventId !== event.id) {
+					if (current._getWrapper(strKey)?.eventId !== event.id) {
 						return () => {
 							for (let j = undoActions.length - 1; j >= 0; j--) {
 								undoActions[j]();
@@ -339,7 +340,8 @@ export class EgWalker {
 					}
 				}
 			} else if (current instanceof YArray) {
-				const val: unknown = current.get(key as number);
+				const numKey = Number(key);
+				const val: unknown = current.get(numKey);
 				if (val instanceof YMap || val instanceof YArray || val instanceof YText) {
 					next = val;
 				} else {
@@ -429,8 +431,9 @@ export class EgWalker {
 	 * @returns A state snapshot object.
 	 */
 	getStateSnapshot(): StateSnapshot {
+		const docSnap = this.doc.getSnapshot();
 		return {
-			doc: this.doc.getSnapshot() as Record<string, unknown>,
+			doc: docSnap,
 			graph: { events: this.graph.getEventEntries() },
 			replicaId: this.replicaId,
 			sequenceNumber: this.sequenceNumber,

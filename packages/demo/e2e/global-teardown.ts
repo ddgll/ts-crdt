@@ -1,10 +1,8 @@
 import { ChildProcess } from "child_process";
 
 async function globalTeardown() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   console.log("Global teardown: Stopping the server...");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const serverProcess = (global as any).__SERVER_PROCESS__ as ChildProcess;
+  const serverProcess: ChildProcess = Reflect.get(global, "__SERVER_PROCESS__");
   if (serverProcess && serverProcess.pid && !serverProcess.killed) {
     try {
       // Kill the entire process group
