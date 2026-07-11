@@ -39,4 +39,14 @@ describe("Doc", () => {
     const userMap = doc.getMap().get("user") as YMap;
     expect(userMap.get("name")).toEqual("David");
   });
+	it("should preserve replicaId on clear()", () => {
+		const doc = new Doc("replica123");
+		const root = doc.getMap();
+		root.getMap("user").set("name", "Alice");
+
+		doc.clear();
+
+		expect(doc.egWalker.getReplicaId()).toEqual("replica123");
+		expect(doc.toJSON()).toEqual({});
+	});
 });

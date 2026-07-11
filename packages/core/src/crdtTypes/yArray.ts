@@ -127,6 +127,17 @@ export class YArray {
 			const idx = this._data.findIndex(item => item.id === afterId);
 			if (idx !== -1) {
 				insertIdx = idx + 1;
+				// RGA tie-breaking: skip past siblings inserted after the
+				// same anchor that have a smaller event ID prefix.
+				while (insertIdx < this._data.length) {
+					const siblingBaseId = this._data[insertIdx].id.split(':').slice(0, 2).join(':');
+					const myBaseId = eventId;
+					if (siblingBaseId < myBaseId) {
+						insertIdx++;
+					} else {
+						break;
+					}
+				}
 			} else {
 				// Fallback if afterId not found (shouldn't happen with valid topological sort)
 				insertIdx = this._data.length;

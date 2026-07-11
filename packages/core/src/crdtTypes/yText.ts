@@ -161,6 +161,15 @@ export class YText {
 			const idx = this._data.findIndex(item => item.id === afterId);
 			if (idx !== -1) {
 				insertIdx = idx + 1;
+				// RGA tie-breaking: skip past siblings with smaller event IDs
+				while (insertIdx < this._data.length) {
+					const siblingBaseId = this._data[insertIdx].id.split(':').slice(0, 2).join(':');
+					if (siblingBaseId < eventId) {
+						insertIdx++;
+					} else {
+						break;
+					}
+				}
 			} else {
 				insertIdx = this._data.length;
 			}

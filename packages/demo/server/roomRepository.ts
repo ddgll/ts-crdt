@@ -13,10 +13,16 @@ export class SqliteRoomRepository implements Repository {
       .from(schema.events)
       .where(eq(schema.events.roomId, this.roomId));
       
-    return rows.map((row) => {
+    const events: CrdtEvent[] = [];
+    for (const row of rows) {
       const { roomId: _, ...eventData } = row;
-      return eventData as CrdtEvent;
-    });
+      if (isCrdtEvent(eventData)) {
+        events.push(eventData);
+      } else {
+        console.warn(`Skipping invalid event from DB: ${row.id}`);
+      }
+    }
+    return events;
   }
 
   async saveEvents(events: CrdtEvent[]): Promise<void> {

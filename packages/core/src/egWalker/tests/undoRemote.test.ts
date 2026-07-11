@@ -22,11 +22,8 @@ describe("UndoManager with remote concurrent edits", () => {
 		// Undo the local change — remote change should remain
 		undoManager.undo();
 
-		// Note: rebuildStateAtVersion restores to the version before localKey was set.
-		// The remote event happened concurrently, so it may or may not be included
-		// depending on the version (since undoStack tracks event IDs, not just local events).
-		// This test verifies no crash and convergence.
 		expect(doc1.getMap().get("localKey")).toBeUndefined();
+		expect(doc1.getMap().get("remoteKey")).toBe("remoteValue");
 	});
 
 	it("should redo after undo with remote events still present", () => {
@@ -48,9 +45,37 @@ describe("UndoManager with remote concurrent edits", () => {
 		// Undo
 		undoManager.undo();
 		expect(doc.getMap().get("key1")).toBeUndefined();
+		expect(doc.getMap().get("key2")).toBe("remoteValue");
 
 		// Redo — should restore key1
 		undoManager.redo();
 		expect(doc.getMap().get("key1")).toBe("value1");
+		expect(doc.getMap().get("key2")).toBe("remoteValue");
+	});
+
+	it("should undo local map-set while remote array-insert happened concurrently", () => {
+		const doc1 = new Doc("replica1");
+		const doc2 = new Doc("replica2");
+
+		doc1.getMap().getArray("arr").insert(0, ["item1"]);
+		doc2.egWalker.integrateRemote(doc1.egWalker.graph.getAllEvents());
+
+		const undoManager = new UndoManager(doc1.egWalker);
+		undoManager.track();
+
+		// Local change on doc1
+		doc1.getMap().set("localKey", "localValue");
+		undoManager.track();
+
+		// Remote change from doc2
+		doc2.getMap().getArray("arr").insert(1, ["item2"]);
+		const remoteEvents = doc2.egWalker.graph.getChangesSince(doc1.egWalker.getVersion());
+		doc1.egWalker.integrateRemote(remoteEvents);
+
+		// Undo the local change
+		undoManager.undo();
+
+		expect(doc1.getMap().get("localKey")).toBeUndefined();
+		expect(doc1.getMap().getArray("arr").toJSON()).toEqual(["item1", "item2"]);
 	});
 });

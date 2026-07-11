@@ -48,4 +48,28 @@ describe("YArray and YText Concurrent Edits", () => {
 		// YText converges deterministically in the same way.
 		expect(doc1.getMap().getText("txt").toString()).toEqual(doc2.getMap().getText("txt").toString());
 	});
+	it("should merge concurrent YArray inserts deterministically without a full rebuild (incremental fast-path)", () => {
+		const doc1 = new Doc("replicaA");
+		const doc2 = new Doc("replicaB");
+
+		doc1.getMap().getArray("arr").insert(0, ["Anchor"]);
+		doc2.egWalker.integrateRemote(doc1.egWalker.graph.getAllEvents());
+
+		// Concurrent inserts after "Anchor"
+		doc1.getMap().getArray("arr").insert(1, ["FromA"]);
+		doc2.getMap().getArray("arr").insert(1, ["FromB"]);
+
+		// Sync 1 to 2
+		const doc1LastEvent = doc1.egWalker.graph.getAllEvents().pop()!;
+		doc2.egWalker.integrateRemote([doc1LastEvent]);
+		
+		// Sync 2 to 1
+		const doc2LastEvent = doc2.egWalker.graph.getAllEvents().find(e => e.op.type === "array-insert" && (e.op as { values: unknown[] }).values[0] === "FromB")!;
+		doc1.egWalker.integrateRemote([doc2LastEvent]);
+
+		// Both should match perfectly without needing a clear/rebuild.
+		// "replicaA" should deterministically order before "replicaB"
+		expect(doc1.getMap().getArray("arr").toJSON()).toEqual(["Anchor", "FromA", "FromB"]);
+		expect(doc2.getMap().getArray("arr").toJSON()).toEqual(["Anchor", "FromA", "FromB"]);
+	});
 });

@@ -77,4 +77,27 @@ describe("YText Concurrent Edits", () => {
 			doc2.getMap().getText("txt").getFormatting().length,
 		);
 	});
+	it("should merge concurrent YText inserts deterministically without a full rebuild (incremental fast-path)", () => {
+		const doc1 = new Doc("replicaA");
+		const doc2 = new Doc("replicaB");
+
+		doc1.getMap().getText("txt").insert(0, "X");
+		doc2.egWalker.integrateRemote(doc1.egWalker.graph.getAllEvents());
+
+		// Concurrent inserts after "X"
+		doc1.getMap().getText("txt").insert(1, "A");
+		doc2.getMap().getText("txt").insert(1, "B");
+
+		// Sync 1 to 2
+		const doc1LastEvent = doc1.egWalker.graph.getAllEvents().pop()!;
+		doc2.egWalker.integrateRemote([doc1LastEvent]);
+		
+		// Sync 2 to 1
+		const doc2LastEvent = doc2.egWalker.graph.getAllEvents().find(e => e.op.type === "text-insert" && (e.op as { text: string }).text === "B")!;
+		doc1.egWalker.integrateRemote([doc2LastEvent]);
+
+		// "replicaA" sorts before "replicaB", so A should be before B
+		expect(doc1.getMap().getText("txt").toString()).toEqual("XAB");
+		expect(doc2.getMap().getText("txt").toString()).toEqual("XAB");
+	});
 });

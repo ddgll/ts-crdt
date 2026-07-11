@@ -188,4 +188,35 @@ describe("Clustered execution via InMemoryPubSubAdapter", () => {
     expect(server1.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
     expect(server2.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
   });
+
+  it("should not double-integrate events when publishing to PubSub", async () => {
+    const pubSub = new InMemoryPubSubAdapter();
+    const repo1 = new MockRepository();
+    const server1 = new CrdtServer("shared-room", repo1, { pubSub });
+    await server1.initialize();
+
+    const ws1 = new MockWebSocket();
+    await server1.handleConnection(ws1);
+
+    const initialEventsCount = server1.getDoc().egWalker.graph.getAllEvents().length;
+
+    const localDoc = server1.getDoc();
+    localDoc.getMap().getArray("content").insert(0, ["b"]);
+    const events = localDoc.egWalker.getStateSnapshot().graph.events;
+    const dummyEvent = events[events.length - 1][1];
+    
+    let integrateCalls = 0;
+    const originalIntegrate = server1.getDoc().egWalker.integrateRemote.bind(server1.getDoc().egWalker);
+    server1.getDoc().egWalker.integrateRemote = (evs) => {
+      integrateCalls++;
+      originalIntegrate(evs);
+    };
+
+    ws1.emit("message", JSON.stringify(dummyEvent));
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(integrateCalls).toBe(1);
+    expect(server1.getDoc().egWalker.graph.getAllEvents().length).toBe(initialEventsCount + 1);
+  });
 });

@@ -97,28 +97,36 @@ export class CrdtServer {
       // If a PubSub adapter is configured, subscribe to events for this room
       if (this.pubSub) {
         this.unsubscribeFromPubSub = await this.pubSub.subscribe(this.roomId, (message) => {
+          let shouldBroadcast = true;
+          
           if (message.type === "event") {
-            // Integrate the event received from the cluster
-            this.doc.egWalker.integrateRemote([message.data]);
+            // Check if we already integrated this event (e.g. if we published it ourselves)
+            if (this.doc.egWalker.graph.getEvent(message.data.id)) {
+              shouldBroadcast = false;
+            } else {
+              this.doc.egWalker.integrateRemote([message.data]);
+            }
           } else if (message.type === "awareness") {
             this.doc.egWalker.awarenessStates.set(message.data.replicaId, message.data.state);
           }
 
-          // Broadcast to all locally connected sockets
-          const broadcastMsgString = JSON.stringify(message);
-          let senderReplicaId: string | undefined;
-          if (message.type === "event") {
-            senderReplicaId = message.data.replicaId;
-          } else if (message.type === "awareness") {
-            senderReplicaId = message.data.replicaId;
-          }
+          if (shouldBroadcast) {
+            // Broadcast to all locally connected sockets
+            const broadcastMsgString = JSON.stringify(message);
+            let senderReplicaId: string | undefined;
+            if (message.type === "event") {
+              senderReplicaId = message.data.replicaId;
+            } else if (message.type === "awareness") {
+              senderReplicaId = message.data.replicaId;
+            }
 
-          for (const client of this.sockets) {
-            if (client.readyState === 1) { // OPEN
-              const clientReplicaIds = this.socketReplicaIds.get(client);
-              const isSender = senderReplicaId && clientReplicaIds && clientReplicaIds.has(senderReplicaId);
-              if (!isSender) {
-                client.send(broadcastMsgString);
+            for (const client of this.sockets) {
+              if (client.readyState === 1) { // OPEN
+                const clientReplicaIds = this.socketReplicaIds.get(client);
+                const isSender = senderReplicaId && clientReplicaIds && clientReplicaIds.has(senderReplicaId);
+                if (!isSender) {
+                  client.send(broadcastMsgString);
+                }
               }
             }
           }
@@ -202,21 +210,21 @@ export class CrdtServer {
         // Persist the event first using repository
         await this.repository.saveEvents([event]);
 
-        // Publish to cluster if adapter is present, otherwise integrate and broadcast locally
+        // Eagerly integrate locally
+        this.doc.egWalker.integrateRemote([event]);
+
+        // Eagerly broadcast to all local clients
+        const broadcastMsg: ServerMessage = { type: "event", data: event };
+        const broadcastMsgString = JSON.stringify(broadcastMsg);
+        for (const client of this.sockets) {
+          if (client.readyState === 1 && client !== socket) { // Optional: exclude sender
+            client.send(broadcastMsgString);
+          }
+        }
+
+        // Publish to cluster if adapter is present
         if (this.pubSub) {
           await this.pubSub.publish(this.roomId, { type: "event", data: event });
-        } else {
-          // Standalone mode: integrate locally
-          this.doc.egWalker.integrateRemote([event]);
-
-          // Standalone mode: broadcast to all local clients
-          const broadcastMsg: ServerMessage = { type: "event", data: event };
-          const broadcastMsgString = JSON.stringify(broadcastMsg);
-          for (const client of this.sockets) {
-            if (client.readyState === 1 && client !== socket) { // Optional: exclude sender
-              client.send(broadcastMsgString);
-            }
-          }
         }
 
         this.eventCountSinceCompaction++;

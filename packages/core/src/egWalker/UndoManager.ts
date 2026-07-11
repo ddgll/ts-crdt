@@ -27,7 +27,11 @@ export class UndoManager {
 	 */
 	public track() {
 		const currentVersion = this.walker.getVersion();
-		this.undoStack.push(currentVersion);
+		const allEvents = this.walker.graph.getEvents(currentVersion);
+		const localEventIds = allEvents
+			.filter(e => e.replicaId === this.walker.getReplicaId())
+			.map(e => e.id);
+		this.undoStack.push(localEventIds);
 		this.redoStack = []; // Clear redo stack on new action
 	}
 
@@ -40,14 +44,21 @@ export class UndoManager {
 			return;
 		}
 
-		const undoneVersion = this.undoStack.pop()!;
-		this.redoStack.push(undoneVersion);
+		const undoneLocalEvents = this.undoStack.pop()!;
+		this.redoStack.push(undoneLocalEvents);
 
-		const versionToRestore =
+		const previousLocalEvents =
 			this.undoStack.length > 0
 				? this.undoStack[this.undoStack.length - 1]
-				: []; // If stack is empty, restore to initial state
-		this.walker.rebuildStateAtVersion(versionToRestore);
+				: [];
+
+		const allEvents = this.walker.graph.getAllEvents();
+		const remoteEventIds = allEvents
+			.filter(e => e.replicaId !== this.walker.getReplicaId())
+			.map(e => e.id);
+
+		const targetVersion = [...previousLocalEvents, ...remoteEventIds];
+		this.walker.rebuildStateAtVersion(targetVersion);
 	}
 
 	/**
@@ -61,6 +72,13 @@ export class UndoManager {
 
 		const versionToRestore = this.redoStack.pop()!;
 		this.undoStack.push(versionToRestore);
-		this.walker.rebuildStateAtVersion(versionToRestore);
+		
+		const allEvents = this.walker.graph.getAllEvents();
+		const remoteEventIds = allEvents
+			.filter(e => e.replicaId !== this.walker.getReplicaId())
+			.map(e => e.id);
+
+		const targetVersion = [...versionToRestore, ...remoteEventIds];
+		this.walker.rebuildStateAtVersion(targetVersion);
 	}
 }
