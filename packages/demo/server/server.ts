@@ -77,6 +77,16 @@ async function initializeServer() {
     return c.text(`Room ${roomId} not found`, 404);
   });
 
+  app.get("/api/evict", async (c) => {
+    const roomId = c.req.query("room") || "default";
+    const server = serverInstances.get(roomId);
+    if (server) {
+      serverInstances.delete(roomId);
+      return c.text(`Evicted room ${roomId}`);
+    }
+    return c.text(`Room ${roomId} not found`, 404);
+  });
+
   app.get(
     "/ws-text",
     upgradeWebSocket((c) => {

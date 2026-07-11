@@ -371,7 +371,7 @@ export class YArray {
 		snapshot: unknown[],
 	): YArray {
 		const arr = new YArray(doc, path);
-		arr._data = (snapshot as { value: unknown }[]).map((itemData, i) => {
+		arr._data = (snapshot as { id: string; value: unknown; isDeleted: boolean }[]).map((itemData, i) => {
 			const itemPath = [...path, i];
 			let parsedValue = itemData.value;
 			if (
