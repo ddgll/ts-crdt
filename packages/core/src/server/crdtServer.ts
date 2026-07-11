@@ -188,7 +188,7 @@ export class CrdtServer {
 
         // Validate the event structure to prevent injection of arbitrary data
         if (!isCrdtEvent(event)) {
-          console.warn("Rejected invalid event from client:", (event as any).id);
+          console.warn("Rejected invalid event from client:", event);
           return;
         }
 

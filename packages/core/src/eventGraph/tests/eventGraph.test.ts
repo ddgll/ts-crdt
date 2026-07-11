@@ -67,7 +67,7 @@ describe("eventGraph", () => {
         id: "1",
         replicaId: "A",
         parents: [],
-        op: { type: ARRAY_DELETE_OP, path: [], afterId: null, targetIds: ["A:0"] },
+        op: { type: ARRAY_DELETE_OP, path: [], targetIds: ["A:0"] },
       };
       expect(isCrdtEvent(event)).toBe(true);
     });
