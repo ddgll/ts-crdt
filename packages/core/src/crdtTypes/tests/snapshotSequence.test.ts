@@ -50,6 +50,6 @@ describe("loadStateSnapshot sequence number handling", () => {
 		// Ensure it is loaded back as a plain object and not a corrupted YMap instance.
 		expect(val).toEqual({ crdtType: "YMap", data: "malicious" });
 		expect(val instanceof Object).toBe(true);
-		expect((val as any).get).toBeUndefined(); // Should not have CRDT methods
+		expect((val as { get?: unknown }).get).toBeUndefined(); // Should not have CRDT methods
 	});
 });

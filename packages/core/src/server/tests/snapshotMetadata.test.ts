@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { CrdtServer } from "../crdtServer.js";
-import { Doc, CrdtEvent, TEXT_DELETE_OP } from "../../index.js";
+import { Doc, CrdtEvent } from "../../index.js";
 
 describe("CRDT Snapshot Metadata Preservation", () => {
 	it("should preserve original event IDs and allow delayed events to apply", async () => {

@@ -240,4 +240,65 @@ describe("Event Graph Compaction", () => {
     expect(seq2).toBeGreaterThan(seq1);
     expect(seq2).toBe(seq1 + 1);
   });
+
+  it("should drain backgroundEventsBuffer using a while loop to fix compaction race condition", async () => {
+    let savedEvents: CrdtEvent[] = [];
+    let saveEventsCallCount = 0;
+    
+    const doc = new Doc("client-race");
+    doc.getMap().set("race-key1", "v");
+    doc.getMap().set("race-key2", "v");
+    const allEvents = doc.egWalker.graph.getEvents(doc.egWalker.getVersion());
+    const e1 = allEvents.find(e => e.op.type === "map-set" && (e.op as { key: string }).key === "race-key1")!;
+    const e2 = allEvents.find(e => e.op.type === "map-set" && (e.op as { key: string }).key === "race-key2")!;
+    
+    // eslint-disable-next-line prefer-const
+    let server: CrdtServer;
+
+    const mockRepo: Repository = {
+      getEvents: async () => savedEvents,
+      saveEvents: async (events) => {
+        saveEventsCallCount++;
+        savedEvents.push(...events);
+        
+        // saveEventsCallCount === 1 is the snapshot save.
+        if (saveEventsCallCount === 1 && server && (server as unknown as { backgroundEventsBuffer: CrdtEvent[] }).backgroundEventsBuffer) {
+          // Simulate event 1 arriving while snapshot is being saved
+          (server as unknown as { backgroundEventsBuffer: CrdtEvent[] }).backgroundEventsBuffer.push(e1);
+        }
+        
+        // saveEventsCallCount === 2 is the buffer save for event 1.
+        if (saveEventsCallCount === 2 && server && (server as unknown as { backgroundEventsBuffer: CrdtEvent[] }).backgroundEventsBuffer) {
+          // Simulate event 2 arriving while event 1 is being saved
+          (server as unknown as { backgroundEventsBuffer: CrdtEvent[] }).backgroundEventsBuffer.push(e2);
+        }
+      },
+      clearEvents: async () => {
+        savedEvents = [];
+        saveEventsCallCount = 0;
+      }
+    };
+
+    server = new CrdtServer("test-room-race", mockRepo, { compactionThreshold: 1000 });
+    await server.initialize();
+    
+    // Add some data so compaction has something to do
+    server.getDoc().getMap().set("k", "v");
+    
+    // Trigger compaction manually
+    await server.compact();
+    
+    // Wait for the background compaction to finish
+    if ((server as unknown as { compactionPromise: Promise<void> }).compactionPromise) {
+      await (server as unknown as { compactionPromise: Promise<void> }).compactionPromise;
+    }
+    
+    // Check if the raced events were persisted
+    const savedKeys = savedEvents.filter(e => e.op.type === "map-set").map(e => (e.op as { key: string }).key);
+    expect(savedKeys).toContain("race-key1");
+    expect(savedKeys).toContain("race-key2");
+    
+    // 1 for snapshot, 1 for e1, 1 for e2 = 3 calls
+    expect(saveEventsCallCount).toBe(3);
+  });
 });

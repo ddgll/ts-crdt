@@ -480,8 +480,10 @@ export class CrdtServer {
             await this.repository.saveEvents([snapshotEvent, ...remainingEvents]);
             
             // Save buffered events that arrived during compaction
-            if (this.backgroundEventsBuffer && this.backgroundEventsBuffer.length > 0) {
-              await this.repository.saveEvents(this.backgroundEventsBuffer);
+            while (this.backgroundEventsBuffer && this.backgroundEventsBuffer.length > 0) {
+              const bufferToSave = this.backgroundEventsBuffer;
+              this.backgroundEventsBuffer = []; // Reset reference to catch new incoming events
+              await this.repository.saveEvents(bufferToSave);
             }
           } catch (err) {
             console.error("Error during background compaction DB I/O:", err);

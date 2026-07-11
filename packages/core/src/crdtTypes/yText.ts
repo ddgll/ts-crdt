@@ -384,7 +384,7 @@ export class YText {
 		snapshot: unknown[],
 	): YText {
 		const ytext = new YText(doc, path);
-		ytext._data = (snapshot as any[]).map((item) => ({
+		ytext._data = (snapshot as { id: string, char: string, isDeleted: boolean, attributes: Record<string, unknown> }[]).map((item) => ({
 			id: item.id,
 			char: item.char,
 			isDeleted: item.isDeleted,

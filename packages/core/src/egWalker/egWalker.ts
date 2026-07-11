@@ -262,8 +262,8 @@ export class EgWalker {
 			let next: YMap | YArray | YText | undefined;
 
 			if (current instanceof YMap) {
-				const wrapper = current._getWrapper(key as string);
-				const val = wrapper?.value;
+				const wrapper: { value: unknown, eventId: string } | undefined = current._getWrapper(key as string) as { value: unknown, eventId: string } | undefined;
+				const val: unknown = wrapper?.value;
 
 				if (val instanceof YMap || val instanceof YArray || val instanceof YText) {
 					next = val;
@@ -321,7 +321,7 @@ export class EgWalker {
 					if (undoSet) undoActions.push(undoSet);
 				}
 			} else if (current instanceof YArray) {
-				const val = current.get(key as number);
+				const val: unknown = current.get(key as number);
 				if (val instanceof YMap || val instanceof YArray || val instanceof YText) {
 					next = val;
 				} else {
