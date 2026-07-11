@@ -11,7 +11,7 @@ import {
 } from "../../eventGraph/eventGraph.js";
 
 describe("EgWalker extended coverage", () => {
-  it("should throw when applying map-set to a YArray", () => {
+  it("should gracefully no-op when applying map-set to a YArray", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
     const arr = new YArray(doc, ["my-array"]);
@@ -24,36 +24,30 @@ describe("EgWalker extended coverage", () => {
       value: "bar",
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(() => walker.localOp(op as any)).toThrow(
-      new EgWalkerError("Target for map-set is not a YMap")
-    );
+    expect(() => walker.localOp(op as any)).not.toThrow();
   });
 
-  it("should throw when applying array-insert to a YMap", () => {
+  it("should gracefully no-op when applying array-insert to a YMap", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
 
     const op = { type: ARRAY_INSERT_OP, path: [], index: 0, values: ["a"] };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(() => walker.localOp(op as any)).toThrow(
-      new EgWalkerError("Target for array-insert is not a YArray")
-    );
+    expect(() => walker.localOp(op as any)).not.toThrow();
   });
 
-  it("should throw when applying array-delete to a YMap", () => {
+  it("should gracefully no-op when applying array-delete to a YMap", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
 
     const op = { type: ARRAY_DELETE_OP, path: [], index: 0, length: 1 };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(() => walker.localOp(op as any)).toThrow(
-      new EgWalkerError("Target for array-delete is not a YArray")
-    );
+    expect(() => walker.localOp(op as any)).not.toThrow();
   });
 
 
 
-  it("should throw when path is invalid", () => {
+  it("should gracefully no-op when path traverses into non-existent array index", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
     const arr = new YArray(doc, ["my-array"]);
@@ -66,9 +60,7 @@ describe("EgWalker extended coverage", () => {
       values: ["a"],
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(() => walker.localOp(op as any)).toThrow(
-      new EgWalkerError("Could not find CRDT at path index: 0")
-    );
+    expect(() => walker.localOp(op as any)).not.toThrow();
   });
 
   it("should handle event that already exists", () => {
@@ -133,7 +125,7 @@ describe("EgWalker extended coverage", () => {
     expect(mapB.get("foo")).toBe("bar");
   });
 
-  it("should throw when path contains a non-CRDT component", () => {
+  it("should dynamically create container when path contains a primitive without eventId", () => {
     const doc = new Doc();
     const walker = doc.egWalker;
     doc.getMap()._applySet("a", 123); // 'a' is a primitive, not a YMap/YArray/YText
@@ -143,8 +135,8 @@ describe("EgWalker extended coverage", () => {
       key: "foo",
       value: "bar",
     };
-    expect(() => walker.localOp(op)).toThrow(
-      new EgWalkerError("Invalid path component in path: a/b")
-    );
+    expect(() => walker.localOp(op)).not.toThrow();
+    const mapA = doc.getMap().get("a");
+    expect(mapA).toBeInstanceOf(YMap);
   });
 });

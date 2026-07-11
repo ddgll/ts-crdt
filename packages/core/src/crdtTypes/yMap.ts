@@ -106,7 +106,13 @@ export class YMap {
 		};
 	}
 
-
+	/**
+	 * Gets the wrapper for a key, exposing the value and eventId.
+	 * @internal
+	 */
+	_getWrapper(key: string): { value: unknown; eventId?: string } | undefined {
+		return this._map.get(key);
+	}
 
 	/**
 	 * Gets the value associated with a key.

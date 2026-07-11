@@ -11,6 +11,7 @@ import {
 	TEXT_DELETE_OP,
 	TEXT_FORMAT_OP,
 	TEXT_INSERT_OP,
+	compareEventIds,
 } from "../eventGraph/eventGraph.js";
 import { Doc } from "../crdtTypes/doc.js";
 import { YMap } from "../crdtTypes/yMap.js";
@@ -261,14 +262,41 @@ export class EgWalker {
 			let next: YMap | YArray | YText | undefined;
 
 			if (current instanceof YMap) {
-				next = current.get(key as string) as
-					| YMap
-					| YArray
-					| YText
-					| undefined;
-				if (!next) {
+				const wrapper = current._getWrapper(key as string);
+				const val = wrapper?.value;
+
+				if (val instanceof YMap || val instanceof YArray || val instanceof YText) {
+					next = val;
+				} else if (val !== undefined) {
+					// It's a primitive. Do LWW comparison.
+					const existingEventId = wrapper?.eventId;
+					if (!existingEventId || compareEventIds(event.id, existingEventId) >= 0) {
+						// Overwrite primitive with appropriate container
+						const newPath = op.path.slice(0, i + 1);
+						if (i === op.path.length - 1) {
+							if (op.type === ARRAY_INSERT_OP || op.type === ARRAY_DELETE_OP) {
+								next = new YArray(this.doc, newPath);
+							} else if (op.type === TEXT_INSERT_OP || op.type === TEXT_FORMAT_OP || op.type === TEXT_DELETE_OP) {
+								next = new YText(this.doc, newPath);
+							} else {
+								next = new YMap(this.doc, newPath);
+							}
+						} else {
+							next = new YMap(this.doc, newPath);
+						}
+						const undoSet = current._applySet(key as string, next, event.id);
+						if (undoSet) undoActions.push(undoSet);
+					} else {
+						// Existing primitive wins, graceful no-op for the rest of this event
+						return () => {
+							for (let j = undoActions.length - 1; j >= 0; j--) {
+								undoActions[j]();
+							}
+						};
+					}
+				} else {
+					// Undefined, create container
 					const newPath = op.path.slice(0, i + 1);
-					// If we are at the last segment of the path, create the correct leaf type.
 					if (i === op.path.length - 1) {
 						if (
 							op.type === ARRAY_INSERT_OP ||
@@ -289,28 +317,32 @@ export class EgWalker {
 						// For intermediate paths, always create a YMap.
 						next = new YMap(this.doc, newPath);
 					}
-					const undoSet = current._applySet(key as string, next);
+					const undoSet = current._applySet(key as string, next, event.id);
 					if (undoSet) undoActions.push(undoSet);
 				}
 			} else if (current instanceof YArray) {
-				next = current.get(key as number) as
-					| YMap
-					| YArray
-					| YText
-					| undefined;
-				if (!next) {
-					throw new EgWalkerError(
-						`Could not find CRDT at path index: ${key}`,
-					);
+				const val = current.get(key as number);
+				if (val instanceof YMap || val instanceof YArray || val instanceof YText) {
+					next = val;
+				} else {
+					return () => {
+						for (let j = undoActions.length - 1; j >= 0; j--) {
+							undoActions[j]();
+						}
+					};
 				}
 			} else if (current instanceof YText) {
-				throw new EgWalkerError(
-					`Path continues after YText at ${op.path.join("/")}`,
-				);
+				return () => {
+					for (let j = undoActions.length - 1; j >= 0; j--) {
+						undoActions[j]();
+					}
+				};
 			} else {
-				throw new EgWalkerError(
-					`Invalid path component in path: ${op.path.join("/")}`,
-				);
+				return () => {
+					for (let j = undoActions.length - 1; j >= 0; j--) {
+						undoActions[j]();
+					}
+				};
 			}
 			current = next;
 		}
@@ -321,61 +353,37 @@ export class EgWalker {
 			case MAP_SET_OP:
 				if (target instanceof YMap) {
 					undoActions.push(target._applySet(op.key, op.value, event.id));
-				} else {
-					throw new EgWalkerError("Target for map-set is not a YMap");
 				}
 				break;
 			case MAP_DELETE_OP:
 				if (target instanceof YMap) {
 					undoActions.push(target._applyDelete(op.key));
-				} else {
-					throw new EgWalkerError("Target for map-delete is not a YMap");
 				}
 				break;
 			case ARRAY_INSERT_OP:
 				if (target instanceof YArray) {
 					undoActions.push(target._applyInsert(event.id, op.afterId, op.values));
-				} else {
-					throw new EgWalkerError(
-						"Target for array-insert is not a YArray",
-					);
 				}
 				break;
 			case ARRAY_DELETE_OP:
 				if (target instanceof YArray) {
 					undoActions.push(target._applyDelete(op.targetIds));
-				} else {
-					throw new EgWalkerError(
-						"Target for array-delete is not a YArray",
-					);
 				}
 				break;
 
 			case TEXT_INSERT_OP:
 				if (target instanceof YText) {
 					undoActions.push(target._applyInsert(event.id, op.afterId, op.text));
-				} else {
-					throw new EgWalkerError(
-						"Target for text-insert is not a YText",
-					);
 				}
 				break;
 			case TEXT_FORMAT_OP:
 				if (target instanceof YText) {
 					undoActions.push(target._applyFormat(op.targetIds, op.attributes));
-				} else {
-					throw new EgWalkerError(
-						"Target for text-format is not a YText",
-					);
 				}
 				break;
 			case TEXT_DELETE_OP:
 				if (target instanceof YText) {
 					undoActions.push(target._applyDelete(op.targetIds));
-				} else {
-					throw new EgWalkerError(
-						"Target for text-delete is not a YText",
-					);
 				}
 				break;
 		}
