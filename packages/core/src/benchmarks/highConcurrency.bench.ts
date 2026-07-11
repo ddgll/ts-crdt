@@ -13,9 +13,9 @@ class MockWebSocket implements MinimalWebSocket {
   readyState = 1;
   send() {}
   close() {}
-  private listeners: Record<string, Function[]> = { message: [], close: [], error: [] };
-  on(event: string, cb: Function) { this.listeners[event].push(cb); }
-  emit(event: string, arg?: any) { this.listeners[event].forEach(cb => cb(arg)); }
+  private listeners: Record<string, ((arg?: unknown) => void)[]> = { message: [], close: [], error: [] };
+  on(event: string, cb: (arg?: unknown) => void) { this.listeners[event].push(cb); }
+  emit(event: string, arg?: unknown) { this.listeners[event].forEach(cb => cb(arg)); }
 }
 
 describe("High Concurrency Benchmarks", () => {

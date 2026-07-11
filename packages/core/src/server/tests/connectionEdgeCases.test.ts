@@ -41,9 +41,9 @@ class MockWebSocket implements MinimalWebSocket {
   on(event: "close", cb: () => void): void;
   on(event: "error", cb: (err: unknown) => void): void;
   on(event: "message" | "close" | "error", cb: unknown): void {
-    if (event === "message") this.messageListeners.push(cb as any);
-    else if (event === "close") this.closeListeners.push(cb as any);
-    else if (event === "error") this.errorListeners.push(cb as any);
+    if (event === "message") this.messageListeners.push(cb as (data: unknown) => void);
+    else if (event === "close") this.closeListeners.push(cb as () => void);
+    else if (event === "error") this.errorListeners.push(cb as (err: unknown) => void);
   }
 
   emit(event: "message", data: unknown): void;
@@ -65,7 +65,7 @@ describe("Connection Edge Cases", () => {
     const ws1 = new MockWebSocket();
     await server.handleConnection(ws1);
 
-    expect((server as any).sockets.size).toBe(1);
+    expect((server as unknown as { sockets: Set<unknown> }).sockets.size).toBe(1);
 
     ws1.emit("error", new Error("ECONNRESET"));
     // The server listens to "error" and typically cleans up, or ignores it. 
@@ -74,7 +74,7 @@ describe("Connection Edge Cases", () => {
 
     await new Promise(resolve => setTimeout(resolve, 10));
     
-    expect((server as any).sockets.size).toBe(0);
+    expect((server as unknown as { sockets: Set<unknown> }).sockets.size).toBe(0);
   });
 
   it("should ignore messages sent after socket closes", async () => {

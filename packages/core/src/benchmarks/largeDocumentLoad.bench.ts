@@ -1,6 +1,6 @@
 import { bench, describe } from 'vitest';
 import { Doc } from "../crdtTypes/doc.js";
-import { YArray } from "../crdtTypes/yArray.js";
+
 import { CrdtServer, Repository } from "../server/crdtServer.js";
 import { CrdtEvent } from "../eventGraph/eventGraph.js";
 

@@ -17,13 +17,13 @@ class MockWebSocket implements MinimalWebSocket {
     this.emit("close");
   }
   
-  private listeners: Record<string, Function[]> = { message: [], close: [], error: [] };
+  private listeners: Record<string, ((arg?: unknown) => void)[]> = { message: [], close: [], error: [] };
   
-  on(event: string, cb: Function) {
+  on(event: string, cb: (arg?: unknown) => void) {
     this.listeners[event].push(cb);
   }
   
-  emit(event: string, arg?: any) {
+  emit(event: string, arg?: unknown) {
     this.listeners[event].forEach(cb => cb(arg));
   }
 }

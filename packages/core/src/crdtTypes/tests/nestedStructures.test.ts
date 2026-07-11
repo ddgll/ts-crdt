@@ -1,7 +1,5 @@
 import { Doc } from "../doc.js";
-import { YMap } from "../yMap.js";
-import { YArray } from "../yArray.js";
-import { YText } from "../yText.js";
+
 import { describe, it, expect } from "vitest";
 
 describe("Nested CRDT Structures", () => {
