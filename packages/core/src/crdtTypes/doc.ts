@@ -40,8 +40,7 @@ export class Doc {
 	clear() {
 		// Generate a new EgWalker with a fresh replicaId to prevent event ID
 		// collisions with events from the old session that may exist on other replicas.
-		const oldReplicaId = this.egWalker.getReplicaId();
-		this.egWalker = new EgWalker(this, oldReplicaId);
+		this.egWalker = new EgWalker(this);
 		this._root = new YMap(this, []);
 	}
 
