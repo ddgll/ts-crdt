@@ -53,6 +53,8 @@ export interface CrdtServerOptions {
   maxValueSize?: number;
   /** Maximum events per second per socket. Default: 100 */
   maxEventsPerSecond?: number;
+  /** Time in milliseconds to wait before removing an idle server from the global map. Default: 30,000 */
+  idleTimeoutMs?: number;
 }
 
 /**
@@ -328,6 +330,12 @@ export class CrdtServer {
 
         this.initialized = false;
         this.initializingPromise = null;
+        
+        setTimeout(() => {
+          if (this.sockets.size === 0) {
+            serverInstances.delete(this.roomId);
+          }
+        }, this.options?.idleTimeoutMs ?? 30_000);
       }
     };
 
@@ -417,7 +425,7 @@ export class CrdtServer {
 }
 
 // Global Map to store server instances mapped to their roomId
-const serverInstances = new Map<string, CrdtServer>();
+export const serverInstances = new Map<string, CrdtServer>();
 
 /**
  * Exposes a helper function that takes the socket and the repository in parameters

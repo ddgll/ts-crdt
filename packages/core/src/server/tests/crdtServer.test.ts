@@ -6,9 +6,17 @@ import { CrdtEvent } from "../../index.js";
 class MockRepository implements Repository {
   events: CrdtEvent[] = [];
   saveEventsCalls = 0;
+  getEventsCalls = 0;
+  clearEventsCalls = 0;
   shouldFail = false;
 
+  async clearEvents(): Promise<void> {
+    this.clearEventsCalls++;
+    this.events = [];
+  }
+
   async getEvents(): Promise<CrdtEvent[]> {
+    this.getEventsCalls++;
     return this.events;
   }
 
@@ -316,5 +324,27 @@ describe("Clustered execution via InMemoryPubSubAdapter", () => {
 
     expect(integrateCalls).toBe(1);
     expect(server1.getDoc().egWalker.graph.getAllEvents().length).toBe(initialEventsCount + 1);
+  });
+});
+
+import { handleWebSocket, serverInstances } from "../crdtServer.js";
+
+describe("serverInstances TTL", () => {
+  it("should remove server from global map after idle timeout", async () => {
+    const repo = new MockRepository();
+    const ws1 = new MockWebSocket();
+    
+    // Connect first client
+    await handleWebSocket(ws1, "ttl-room", repo, { idleTimeoutMs: 10 });
+    expect(serverInstances.has("ttl-room")).toBe(true);
+    
+    // Disconnect
+    ws1.emit("close");
+    
+    // Wait for the real timer (10ms) to fire + some buffer
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    // Verify it was removed
+    expect(serverInstances.has("ttl-room")).toBe(false);
   });
 });

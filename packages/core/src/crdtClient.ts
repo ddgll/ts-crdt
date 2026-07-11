@@ -169,9 +169,9 @@ export class CrdtClient {
    * 
    * @param path The path of the target container in the document.
    * @param newText The new text value to synchronize.
-   * @param type Optional preference for the container type ("array" | "text") if it doesn't exist yet. Defaults to "array".
+   * @param type Optional preference for the container type ("array" | "text") if it doesn't exist yet. Defaults to "text".
    */
-  syncText(path: (string | number)[], newText: string, type: "array" | "text" = "array"): void {
+  syncText(path: (string | number)[], newText: string, type: "array" | "text" = "text"): void {
     const target = this.resolvePath(path);
     
     let oldText = "";

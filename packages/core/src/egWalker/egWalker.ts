@@ -196,17 +196,6 @@ export class EgWalker {
 		return addedEvents;
 	}
 
-	/**
-	 * Adds a remote or local event to the graph and applies it to the document.
-	 * If the event already exists, it is ignored.
-	 * @param event The event to add.
-	 */
-	addEvent(event: CrdtEvent) {
-		const added = this._ingestEvents([event]);
-		if (added.length > 0) {
-			this.notifyListeners(event, event.replicaId === this.replicaId);
-		}
-	}
 
 	/**
 	 * Applies the operation from a single event to the document's state.

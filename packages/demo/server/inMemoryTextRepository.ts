@@ -6,6 +6,9 @@ import * as schema from "./db/schema.js";
 
 export class InMemoryTextRepository implements Repository {
   private roomId: string;
+  // Note: This repository maintains its own Doc instance to integrate events independently 
+  // from the CrdtServer's doc. Both process the same events, doubling memory and CPU usage.
+  // This duplication is a known trade-off for simplicity in this demo.
   private doc: Doc;
   private initialized = false;
 

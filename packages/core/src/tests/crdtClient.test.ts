@@ -167,19 +167,19 @@ describe("CrdtClient", () => {
       const client = new CrdtClient(doc);
 
       // 1. Initial sync (inserts all characters)
-      client.syncText(["content"], "hello");
+      client.syncText(["content"], "hello", "array");
       const array = doc.getMap().getArray("content");
       expect(array.toJSON().join("")).toBe("hello");
 
       // 2. Sync with change (diff update: replaces 'o' with 'a')
       const versionBefore = doc.egWalker.getVersion();
-      client.syncText(["content"], "hella");
+      client.syncText(["content"], "hella", "array");
       expect(array.toJSON().join("")).toBe("hella");
       expect(doc.egWalker.getVersion()).not.toEqual(versionBefore);
 
       // 3. Sync with no changes
       const versionAfter = doc.egWalker.getVersion();
-      client.syncText(["content"], "hella");
+      client.syncText(["content"], "hella", "array");
       expect(doc.egWalker.getVersion()).toEqual(versionAfter);
     });
 

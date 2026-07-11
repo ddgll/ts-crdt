@@ -279,6 +279,12 @@ export function compareEventIds(id1: string, id2: string): number {
 	return rep1.localeCompare(rep2);
 }
 
+const VALID_OP_TYPES = new Set([
+	MAP_SET_OP, MAP_DELETE_OP, ARRAY_INSERT_OP, ARRAY_DELETE_OP,
+	ARRAY_REPLACE_OP, TEXT_INSERT_OP, TEXT_FORMAT_OP, TEXT_DELETE_OP,
+	SNAPSHOT_OP,
+]);
+
 /**
  * The EventGraph is a data structure that stores the history of all operations as a DAG.
  */
@@ -296,19 +302,8 @@ export class EventGraph {
 	 */
 	addEvent(event: CrdtEvent): void {
 		const op = event.op;
-		switch (op.type) {
-			case MAP_SET_OP:
-			case MAP_DELETE_OP:
-			case ARRAY_INSERT_OP:
-			case ARRAY_DELETE_OP:
-			case ARRAY_REPLACE_OP:
-			case TEXT_INSERT_OP:
-			case TEXT_FORMAT_OP:
-			case TEXT_DELETE_OP:
-			case SNAPSHOT_OP:
-				break;
-			default:
-				throw new EventGraphError("Invalid operation type");
+		if (!VALID_OP_TYPES.has(op.type)) {
+			throw new EventGraphError("Invalid operation type");
 		}
 		if (this.events.has(event.id)) {
 			return;

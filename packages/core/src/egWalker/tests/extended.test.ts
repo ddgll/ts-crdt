@@ -92,7 +92,7 @@ describe("EgWalker extended coverage", () => {
       key: "foo",
       value: "bar",
     });
-    walker.addEvent(event); // should not throw
+    walker.integrateRemote([event]); // should not throw
     expect(doc.getMap().get("foo")).toBe("bar");
   });
 

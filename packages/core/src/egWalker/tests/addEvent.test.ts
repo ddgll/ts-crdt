@@ -19,7 +19,7 @@ describe("EgWalker.addEvent", () => {
       parents: [],
       op: { type: MAP_SET_OP, path: [], key: "foo", value: "bar" },
     };
-    walker.addEvent(event);
+    walker.integrateRemote([event]);
     expect(doc.getMap().get("foo")).toEqual("bar");
   });
 
@@ -33,7 +33,7 @@ describe("EgWalker.addEvent", () => {
       parents: [],
       op: { type: ARRAY_INSERT_OP, path: ["items"], afterId: null, values: ["a"] },
     };
-    walker.addEvent(event);
+    walker.integrateRemote([event]);
     expect(items.get(0) as string).toEqual("a");
   });
 
@@ -51,7 +51,7 @@ describe("EgWalker.addEvent", () => {
       parents: (walker as any)["graph"].getVersion(),
       op: { type: ARRAY_DELETE_OP, path: ["items"], targetIds: [`${insertEvent!.id}:1`] },
     };
-    walker.addEvent(deleteEvent);
+    walker.integrateRemote([deleteEvent]);
     expect((items.toJSON() as string[]).join("")).toEqual("ac");
   });
 
@@ -64,7 +64,7 @@ describe("EgWalker.addEvent", () => {
       parents: ["non-existent"],
       op: { type: ARRAY_INSERT_OP, path: ["items"], afterId: null, values: ["a"] },
     };
-    expect(() => walker.addEvent(event)).toThrow(
+    expect(() => walker.integrateRemote([event])).toThrow(
       new EventGraphError("Invalid parent")
     );
   });
@@ -78,8 +78,8 @@ describe("EgWalker.addEvent", () => {
       parents: [],
       op: { type: MAP_SET_OP, path: [], key: "foo", value: "bar" },
     };
-    walker.addEvent(event);
-    walker.addEvent(event); // Should be ignored
+    walker.integrateRemote([event]);
+    walker.integrateRemote([event]); // Should be ignored
     expect(doc.getMap().get("foo")).toEqual("bar");
   });
 
@@ -94,7 +94,7 @@ describe("EgWalker.addEvent", () => {
         type: "invalid_op",
       } as unknown as Op,
     };
-    expect(() => walker.addEvent(event)).toThrow("Invalid operation type");
+    expect(() => walker.integrateRemote([event])).toThrow("Invalid operation type");
   });
 
 });

@@ -58,5 +58,5 @@ textarea.addEventListener("input", () => {
     return;
   }
 
-  client.syncText(["content"], textarea.value);
+  client.syncText(["content"], textarea.value, "array");
 });

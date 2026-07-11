@@ -133,5 +133,9 @@ editor.on("update", () => {
     return;
   }
 
-  client.syncText(["content"], editor.getHTML());
+  // Note: Storing full HTML strings as individual characters in a YArray is a simplified demo approach.
+  // It lacks structural awareness and diffs the entire document on each keystroke.
+  // For a production rich text editor, consider using YText with formatting attributes or
+  // building a proper TipTap <-> CRDT binding layer.
+  client.syncText(["content"], editor.getHTML(), "array");
 });
