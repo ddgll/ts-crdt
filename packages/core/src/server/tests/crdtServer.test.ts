@@ -37,6 +37,7 @@ class MockRepository implements Repository {
 class MockWebSocket implements MinimalWebSocket {
   sentData: string[] = [];
   readyState = 1; // OPEN
+  closeCalled = 0;
   
   private messageListeners: ((data: unknown) => void)[] = [];
   private closeListeners: (() => void)[] = [];
@@ -44,6 +45,12 @@ class MockWebSocket implements MinimalWebSocket {
 
   send(data: string): void {
     this.sentData.push(data);
+  }
+
+  close(): void {
+    this.closeCalled++;
+    this.readyState = 3; // CLOSED
+    this.emit("close");
   }
 
   on(event: "message", cb: (data: unknown) => void): void;
@@ -244,6 +251,35 @@ describe("Security Hardening Limits", () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected array-insert"));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected text-insert"));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected map-set"));
+
+    warnSpy.mockRestore();
+  });
+
+  it("should synchronously close the connection on repeated violations to prevent DoS", async () => {
+    const repo = new MockRepository();
+    const server = new CrdtServer("default-room", repo, {
+      maxMessageSize: 100, // Small limit
+      maxEventsPerSecond: 10,
+    });
+    await server.initialize();
+
+    const ws1 = new MockWebSocket();
+    await server.handleConnection(ws1);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const largeMessage = JSON.stringify({ type: "dummy", data: "x".repeat(150) });
+
+    // Fire 1000 synchronous large messages
+    for (let i = 0; i < 1000; i++) {
+      ws1.emit("message", largeMessage);
+    }
+
+    // The socket should have been closed after 5 violations
+    expect(ws1.closeCalled).toBeGreaterThan(0);
+    
+    // The messageQueue should not have ballooned
+    expect((server as any).messageQueue.length).toBe(0);
 
     warnSpy.mockRestore();
   });

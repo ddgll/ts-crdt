@@ -33,6 +33,7 @@ export interface Repository {
  */
 export interface MinimalWebSocket {
   send(data: string): void;
+  close?(): void;
   readyState: number;
   on(event: "message", cb: (data: unknown) => void): void;
   on(event: "close", cb: () => void): void;
@@ -195,27 +196,32 @@ export class CrdtServer {
     const eventTimestamps: number[] = [];
     const maxRate = this.options?.maxEventsPerSecond ?? 100;
     const maxSize = this.options?.maxMessageSize ?? 1_048_576; // 1MB
+    let violations = 0;
 
     socket.on("message", (data: unknown) => {
+      const messageString = typeof data === "string" ? data : String(data);
+      
+      if (messageString.length > maxSize) {
+        console.warn(`Rejected oversized message: ${messageString.length} bytes`);
+        violations++;
+        if (violations > 5) socket.close?.();
+        return;
+      }
+
+      const now = Date.now();
+      eventTimestamps.push(now);
+      while (eventTimestamps.length > 0 && eventTimestamps[0] < now - 1000) {
+        eventTimestamps.shift();
+      }
+      if (eventTimestamps.length > maxRate) {
+        console.warn(`Rate limit exceeded for socket, dropping event`);
+        violations++;
+        if (violations > 5) socket.close?.();
+        return;
+      }
+
       this.messageQueue.push(async () => {
         try {
-          const messageString = typeof data === "string" ? data : String(data);
-          
-          if (messageString.length > maxSize) {
-            console.warn(`Rejected oversized message: ${messageString.length} bytes`);
-            return;
-          }
-
-          const now = Date.now();
-          eventTimestamps.push(now);
-          while (eventTimestamps.length > 0 && eventTimestamps[0] < now - 1000) {
-            eventTimestamps.shift();
-          }
-          if (eventTimestamps.length > maxRate) {
-            console.warn(`Rate limit exceeded for socket, dropping event`);
-            return;
-          }
-
           const parsed = JSON.parse(messageString);
 
           if (parsed.type === "awareness") {
