@@ -68,6 +68,14 @@ export class YText {
 	}
 
 	/**
+	 * Serializes the text and its formatting to a snapshot format that preserves CRDT metadata.
+	 * @returns A raw representation of the text.
+	 */
+	toSnapshot(): unknown[] {
+		return this._data.map(item => ({ ...item, attributes: { ...item.attributes } }));
+	}
+
+	/**
 	 * Inserts text at a specified index.
 	 * @param index The index at which to insert the text.
 	 * @param text The text to insert.
@@ -351,6 +359,32 @@ export class YText {
 	): YText {
 		const ytext = new YText(doc, path);
 		ytext._applyInsert(`snapshot:${path.join('.')}`, null, text);
+		return ytext;
+	}
+
+	/**
+	 * Creates a YText instance from a snapshot object.
+	 * @param doc The parent document.
+	 * @param path The path of the text within the document.
+	 * @param snapshot The snapshot object to deserialize.
+	 * @returns A new YText instance with the deserialized data.
+	 * @internal
+	 */
+	static fromSnapshot(
+		doc: Doc,
+		path: (string | number)[],
+		snapshot: unknown[],
+	): YText {
+		const ytext = new YText(doc, path);
+		ytext._data = (snapshot as any[]).map((item) => ({
+			id: item.id,
+			char: item.char,
+			isDeleted: item.isDeleted,
+			attributes: { ...item.attributes }
+		}));
+		for (let i = 0; i < ytext._data.length; i++) {
+			ytext._idIndex.set(ytext._data[i].id, i);
+		}
 		return ytext;
 	}
 }

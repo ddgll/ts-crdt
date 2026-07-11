@@ -246,7 +246,7 @@ export class EgWalker {
 
 		if (op.type === SNAPSHOT_OP) {
 			const oldRoot = this.doc.getMap();
-			const newRoot = YMap.fromJSON(this.doc, [], op.state);
+			const newRoot = YMap.fromSnapshot(this.doc, [], op.state);
 			this.doc._setRoot(newRoot);
 			return () => {
 				this.doc._setRoot(oldRoot);
@@ -404,7 +404,7 @@ export class EgWalker {
 	 */
 	getStateSnapshot(): StateSnapshot {
 		return {
-			doc: this.doc.toJSON(),
+			doc: this.doc.getSnapshot() as Record<string, unknown>,
 			graph: { events: this.graph.getEventEntries() },
 			replicaId: this.replicaId,
 			sequenceNumber: this.sequenceNumber,
@@ -435,7 +435,7 @@ export class EgWalker {
 			);
 		}
 
-		const newRoot = YMap.fromJSON(this.doc, [], snapshot.doc);
+		const newRoot = YMap.fromSnapshot(this.doc, [], snapshot.doc);
 		this.doc._setRoot(newRoot);
 		this.undoStack.clear();
 		this.cachedSortedEvents = this.graph.getSortedEvents();

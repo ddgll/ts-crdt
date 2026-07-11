@@ -249,9 +249,35 @@ export class YArray {
 					val = { crdtType: "YMap", data: val.toJSON() };
 				} else if (val instanceof YArray) {
 					val = { crdtType: "YArray", data: val.toJSON() };
+				} else if (val instanceof YText) {
+					val = { crdtType: "YText", data: val.toString() };
 				}
 				result.push(val);
 			}
+		}
+		return result;
+	}
+
+	/**
+	 * Serializes the array and its nested CRDTs to a snapshot format that preserves CRDT metadata.
+	 * @returns A raw representation of the array.
+	 */
+	toSnapshot(): unknown[] {
+		const result: unknown[] = [];
+		for (const item of this._data) {
+			let val = item.value;
+			if (val instanceof YMap) {
+				val = { crdtType: "YMap", data: val.toSnapshot() };
+			} else if (val instanceof YArray) {
+				val = { crdtType: "YArray", data: val.toSnapshot() };
+			} else if (val instanceof YText) {
+				val = { crdtType: "YText", data: val.toSnapshot() };
+			}
+			result.push({
+				id: item.id,
+				value: val,
+				isDeleted: item.isDeleted
+			});
 		}
 		return result;
 	}
@@ -301,6 +327,13 @@ export class YArray {
 							data as unknown[],
 						);
 						break;
+					case "YText":
+						parsedValue = YText.fromString(
+							doc,
+							itemPath,
+							data as string,
+						);
+						break;
 				}
 			}
 			return {
@@ -313,6 +346,71 @@ export class YArray {
 			arr._idIndex.set(arr._data[i].id, i);
 		}
 		arr._activeCount = arr._data.length;
+		return arr;
+	}
+
+	/**
+	 * Creates a YArray instance from a snapshot object.
+	 * @param doc The parent document.
+	 * @param path The path of the array within the document.
+	 * @param snapshot The snapshot object to deserialize.
+	 * @returns A new YArray instance with the deserialized data.
+	 * @internal
+	 */
+	static fromSnapshot(
+		doc: Doc,
+		path: (string | number)[],
+		snapshot: unknown[],
+	): YArray {
+		const arr = new YArray(doc, path);
+		arr._data = (snapshot as any[]).map((itemData, i) => {
+			const itemPath = [...path, i];
+			let parsedValue = itemData.value;
+			if (
+				itemData.value &&
+				typeof itemData.value === "object" &&
+				"crdtType" in itemData.value &&
+				"data" in itemData.value
+			) {
+				const { crdtType, data } = itemData.value;
+				switch (crdtType) {
+					case "YMap":
+						parsedValue = YMap.fromSnapshot(
+							doc,
+							itemPath,
+							data as Record<string, unknown>,
+						);
+						break;
+					case "YArray":
+						parsedValue = YArray.fromSnapshot(
+							doc,
+							itemPath,
+							data as unknown[],
+						);
+						break;
+					case "YText":
+						parsedValue = YText.fromSnapshot(
+							doc,
+							itemPath,
+							data as unknown[],
+						);
+						break;
+				}
+			}
+			return {
+				id: itemData.id,
+				value: parsedValue,
+				isDeleted: itemData.isDeleted
+			};
+		});
+		let activeCount = 0;
+		for (let i = 0; i < arr._data.length; i++) {
+			arr._idIndex.set(arr._data[i].id, i);
+			if (!arr._data[i].isDeleted) {
+				activeCount++;
+			}
+		}
+		arr._activeCount = activeCount;
 		return arr;
 	}
 }

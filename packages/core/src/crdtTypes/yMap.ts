@@ -205,6 +205,29 @@ export class YMap {
 	}
 
 	/**
+	 * Serializes the map and its nested CRDTs to a snapshot format that preserves CRDT metadata.
+	 * @returns A raw representation of the map.
+	 */
+	toSnapshot(): Record<string, unknown> {
+		const obj: { [key: string]: unknown } = {};
+		for (const [key, wrapper] of this._map.entries()) {
+			const value = wrapper.value;
+			let snapValue: unknown;
+			if (value instanceof YMap) {
+				snapValue = { crdtType: "YMap", data: value.toSnapshot() };
+			} else if (value instanceof YArray) {
+				snapValue = { crdtType: "YArray", data: value.toSnapshot() };
+			} else if (value instanceof YText) {
+				snapValue = { crdtType: "YText", data: value.toSnapshot() };
+			} else {
+				snapValue = value;
+			}
+			obj[key] = { value: snapValue, eventId: wrapper.eventId };
+		}
+		return obj;
+	}
+
+	/**
 	 * Performs garbage collection by recursively calling gc() on nested CRDT collections.
 	 */
 	gc() {
@@ -234,7 +257,7 @@ export class YMap {
 			const value = json[key] as
 				| { crdtType: string; data: Record<string, unknown> }
 				| Record<string, unknown>;
-			if (value && typeof value === "object" && value.crdtType) {
+			if (value && typeof value === "object" && "crdtType" in value) {
 				switch (value.crdtType) {
 					case "YMap":
 						map._applySet(
@@ -270,6 +293,57 @@ export class YMap {
 			} else {
 				map._applySet(key, value);
 			}
+		}
+		return map;
+	}
+
+	/**
+	 * Creates a YMap instance from a snapshot object.
+	 * @param doc The parent document.
+	 * @param path The path of the map within the document.
+	 * @param snapshot The snapshot object to deserialize.
+	 * @returns A new YMap instance with the deserialized data.
+	 * @internal
+	 */
+	static fromSnapshot(
+		doc: Doc,
+		path: (string | number)[],
+		snapshot: Record<string, unknown>,
+	): YMap {
+		const map = new YMap(doc, path);
+		for (const key in snapshot) {
+			const wrapper = snapshot[key] as { value: unknown; eventId?: string };
+			const value = wrapper.value as
+				| { crdtType: string; data: unknown }
+				| unknown;
+			let parsedValue = value;
+			if (value && typeof value === "object" && "crdtType" in value) {
+				const typedValue = value as { crdtType: string; data: unknown };
+				switch (typedValue.crdtType) {
+					case "YMap":
+						parsedValue = YMap.fromSnapshot(
+							doc,
+							[...path, key],
+							typedValue.data as Record<string, unknown>,
+						);
+						break;
+					case "YArray":
+						parsedValue = YArray.fromSnapshot(
+							doc,
+							[...path, key],
+							typedValue.data as unknown[],
+						);
+						break;
+					case "YText":
+						parsedValue = YText.fromSnapshot(
+							doc,
+							[...path, key],
+							typedValue.data as unknown[],
+						);
+						break;
+				}
+			}
+			map._map.set(key, { value: parsedValue, eventId: wrapper.eventId });
 		}
 		return map;
 	}

@@ -83,6 +83,14 @@ export class Doc {
 	}
 
 	/**
+	 * Serializes the entire document to a snapshot object preserving metadata.
+	 * @returns A raw representation of the document's data.
+	 */
+	getSnapshot() {
+		return this._root.toSnapshot();
+	}
+
+	/**
 	 * Creates a new Doc instance from a JSON object.
 	 * @param json The JSON object to deserialize.
 	 * @returns A new Doc instance with the deserialized data.
