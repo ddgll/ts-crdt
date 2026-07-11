@@ -74,6 +74,27 @@ export class CrdtServer {
   private compactionThreshold?: number;
   private options?: CrdtServerOptions;
   private eventCountSinceCompaction = 0;
+  private messageQueue: (() => Promise<void>)[] = [];
+  private isProcessingQueue = false;
+
+  private async processQueue() {
+    if (this.isProcessingQueue) return;
+    this.isProcessingQueue = true;
+    try {
+      while (this.messageQueue.length > 0) {
+        const task = this.messageQueue.shift();
+        if (task) {
+          try {
+            await task();
+          } catch (err) {
+            console.error("Error processing queued task:", err);
+          }
+        }
+      }
+    } finally {
+      this.isProcessingQueue = false;
+    }
+  }
 
   constructor(roomId: string, repository: Repository, options?: CrdtServerOptions) {
     this.doc = new Doc();
@@ -111,39 +132,42 @@ export class CrdtServer {
       // If a PubSub adapter is configured, subscribe to events for this room
       if (this.pubSub) {
         this.unsubscribeFromPubSub = await this.pubSub.subscribe(this.roomId, (message) => {
-          let shouldBroadcast = true;
-          
-          if (message.type === "event") {
-            // Check if we already integrated this event (e.g. if we published it ourselves)
-            if (this.doc.egWalker.graph.getEvent(message.data.id)) {
-              shouldBroadcast = false;
-            } else {
-              this.doc.egWalker.integrateRemote([message.data]);
-            }
-          } else if (message.type === "awareness") {
-            this.doc.egWalker.awarenessStates.set(message.data.replicaId, message.data.state);
-          }
-
-          if (shouldBroadcast) {
-            // Broadcast to all locally connected sockets
-            const broadcastMsgString = JSON.stringify(message);
-            let senderReplicaId: string | undefined;
+          this.messageQueue.push(async () => {
+            let shouldBroadcast = true;
+            
             if (message.type === "event") {
-              senderReplicaId = message.data.replicaId;
+              // Check if we already integrated this event (e.g. if we published it ourselves)
+              if (this.doc.egWalker.graph.getEvent(message.data.id)) {
+                shouldBroadcast = false;
+              } else {
+                this.doc.egWalker.integrateRemote([message.data]);
+              }
             } else if (message.type === "awareness") {
-              senderReplicaId = message.data.replicaId;
+              this.doc.egWalker.awarenessStates.set(message.data.replicaId, message.data.state);
             }
 
-            for (const client of this.sockets) {
-              if (client.readyState === 1) { // OPEN
-                const clientReplicaIds = this.socketReplicaIds.get(client);
-                const isSender = senderReplicaId && clientReplicaIds && clientReplicaIds.has(senderReplicaId);
-                if (!isSender) {
-                  client.send(broadcastMsgString);
+            if (shouldBroadcast) {
+              // Broadcast to all locally connected sockets
+              const broadcastMsgString = JSON.stringify(message);
+              let senderReplicaId: string | undefined;
+              if (message.type === "event") {
+                senderReplicaId = message.data.replicaId;
+              } else if (message.type === "awareness") {
+                senderReplicaId = message.data.replicaId;
+              }
+
+              for (const client of this.sockets) {
+                if (client.readyState === 1) { // OPEN
+                  const clientReplicaIds = this.socketReplicaIds.get(client);
+                  const isSender = senderReplicaId && clientReplicaIds && clientReplicaIds.has(senderReplicaId);
+                  if (!isSender) {
+                    client.send(broadcastMsgString);
+                  }
                 }
               }
             }
-          }
+          });
+          this.processQueue().catch(console.error);
         });
       }
 
@@ -171,125 +195,128 @@ export class CrdtServer {
     const maxRate = this.options?.maxEventsPerSecond ?? 100;
     const maxSize = this.options?.maxMessageSize ?? 1_048_576; // 1MB
 
-    socket.on("message", async (data: unknown) => {
-      try {
-        const messageString = typeof data === "string" ? data : String(data);
-        
-        if (messageString.length > maxSize) {
-          console.warn(`Rejected oversized message: ${messageString.length} bytes`);
-          return;
-        }
-
-        const now = Date.now();
-        eventTimestamps.push(now);
-        while (eventTimestamps.length > 0 && eventTimestamps[0] < now - 1000) {
-          eventTimestamps.shift();
-        }
-        if (eventTimestamps.length > maxRate) {
-          console.warn(`Rate limit exceeded for socket, dropping event`);
-          return;
-        }
-
-        const parsed = JSON.parse(messageString);
-
-        if (parsed.type === "awareness") {
-          const { replicaId, state } = parsed.data;
+    socket.on("message", (data: unknown) => {
+      this.messageQueue.push(async () => {
+        try {
+          const messageString = typeof data === "string" ? data : String(data);
           
-          let ids = this.socketReplicaIds.get(socket);
-          if (!ids) {
-            ids = new Set();
-            this.socketReplicaIds.set(socket, ids);
+          if (messageString.length > maxSize) {
+            console.warn(`Rejected oversized message: ${messageString.length} bytes`);
+            return;
           }
-          ids.add(replicaId);
 
-          this.doc.egWalker.awarenessStates.set(replicaId, state);
+          const now = Date.now();
+          eventTimestamps.push(now);
+          while (eventTimestamps.length > 0 && eventTimestamps[0] < now - 1000) {
+            eventTimestamps.shift();
+          }
+          if (eventTimestamps.length > maxRate) {
+            console.warn(`Rate limit exceeded for socket, dropping event`);
+            return;
+          }
 
-          const broadcastMsg: ServerMessage = { type: "awareness", data: { replicaId, state } };
-          const broadcastMsgString = JSON.stringify(broadcastMsg);
-          
-          if (this.pubSub) {
-            await this.pubSub.publish(this.roomId, broadcastMsg);
-          } else {
-            for (const client of this.sockets) {
-              if (client.readyState === 1 && client !== socket) { // Optional: exclude sender
-                client.send(broadcastMsgString);
+          const parsed = JSON.parse(messageString);
+
+          if (parsed.type === "awareness") {
+            const { replicaId, state } = parsed.data;
+            
+            let ids = this.socketReplicaIds.get(socket);
+            if (!ids) {
+              ids = new Set();
+              this.socketReplicaIds.set(socket, ids);
+            }
+            ids.add(replicaId);
+
+            this.doc.egWalker.awarenessStates.set(replicaId, state);
+
+            const broadcastMsg: ServerMessage = { type: "awareness", data: { replicaId, state } };
+            const broadcastMsgString = JSON.stringify(broadcastMsg);
+            
+            if (this.pubSub) {
+              await this.pubSub.publish(this.roomId, broadcastMsg);
+            } else {
+              for (const client of this.sockets) {
+                if (client.readyState === 1 && client !== socket) { // Optional: exclude sender
+                  client.send(broadcastMsgString);
+                }
               }
             }
-          }
-          return;
-        }
-
-        let event: CrdtEvent;
-        if (parsed.id && parsed.replicaId) {
-          event = parsed as CrdtEvent;
-        } else if (parsed.type === "event") {
-          event = parsed.data as CrdtEvent;
-        } else {
-          return;
-        }
-
-        // Validate the event structure to prevent injection of arbitrary data
-        if (!isCrdtEvent(event)) {
-          console.warn("Rejected invalid event from client:", event);
-          return;
-        }
-
-        // Operation-specific size limits
-        if (event.op.type === "array-insert") {
-          const maxArraySize = this.options?.maxArrayInsertSize ?? 10_000;
-          if (event.op.values.length > maxArraySize) {
-            console.warn(`Rejected array-insert with ${event.op.values.length} values`);
             return;
           }
-        } else if (event.op.type === "text-insert") {
-          const maxTextSize = this.options?.maxTextInsertSize ?? 100_000;
-          if (event.op.text.length > maxTextSize) {
-            console.warn(`Rejected text-insert with ${event.op.text.length} chars`);
+
+          let event: CrdtEvent;
+          if (parsed.id && parsed.replicaId) {
+            event = parsed as CrdtEvent;
+          } else if (parsed.type === "event") {
+            event = parsed.data as CrdtEvent;
+          } else {
             return;
           }
-        } else if (event.op.type === "map-set") {
-          const maxValueSize = this.options?.maxValueSize ?? 102_400; // 100KB
-          if (JSON.stringify(event.op.value).length > maxValueSize) {
-            console.warn(`Rejected map-set with value size exceeding limit`);
+
+          // Validate the event structure to prevent injection of arbitrary data
+          if (!isCrdtEvent(event)) {
+            console.warn("Rejected invalid event from client:", event);
             return;
           }
-        }
 
-        let eventIds = this.socketReplicaIds.get(socket);
-        if (!eventIds) {
-          eventIds = new Set();
-          this.socketReplicaIds.set(socket, eventIds);
-        }
-        eventIds.add(event.replicaId);
-
-        // Persist the event first using repository
-        await this.repository.saveEvents([event]);
-
-        // Eagerly integrate locally
-        this.doc.egWalker.integrateRemote([event]);
-
-        // Eagerly broadcast to all local clients
-        const broadcastMsg: ServerMessage = { type: "event", data: event };
-        const broadcastMsgString = JSON.stringify(broadcastMsg);
-        for (const client of this.sockets) {
-          if (client.readyState === 1 && client !== socket) { // Optional: exclude sender
-            client.send(broadcastMsgString);
+          // Operation-specific size limits
+          if (event.op.type === "array-insert") {
+            const maxArraySize = this.options?.maxArrayInsertSize ?? 10_000;
+            if (event.op.values.length > maxArraySize) {
+              console.warn(`Rejected array-insert with ${event.op.values.length} values`);
+              return;
+            }
+          } else if (event.op.type === "text-insert") {
+            const maxTextSize = this.options?.maxTextInsertSize ?? 100_000;
+            if (event.op.text.length > maxTextSize) {
+              console.warn(`Rejected text-insert with ${event.op.text.length} chars`);
+              return;
+            }
+          } else if (event.op.type === "map-set") {
+            const maxValueSize = this.options?.maxValueSize ?? 102_400; // 100KB
+            if (JSON.stringify(event.op.value).length > maxValueSize) {
+              console.warn(`Rejected map-set with value size exceeding limit`);
+              return;
+            }
           }
-        }
 
-        // Publish to cluster if adapter is present
-        if (this.pubSub) {
-          await this.pubSub.publish(this.roomId, { type: "event", data: event });
-        }
+          let eventIds = this.socketReplicaIds.get(socket);
+          if (!eventIds) {
+            eventIds = new Set();
+            this.socketReplicaIds.set(socket, eventIds);
+          }
+          eventIds.add(event.replicaId);
 
-        this.eventCountSinceCompaction++;
-        if (this.compactionThreshold && this.eventCountSinceCompaction >= this.compactionThreshold) {
-          this.eventCountSinceCompaction = 0;
-          await this.compact();
+          // Persist the event first using repository
+          await this.repository.saveEvents([event]);
+
+          // Eagerly integrate locally
+          this.doc.egWalker.integrateRemote([event]);
+
+          // Eagerly broadcast to all local clients
+          const broadcastMsg: ServerMessage = { type: "event", data: event };
+          const broadcastMsgString = JSON.stringify(broadcastMsg);
+          for (const client of this.sockets) {
+            if (client.readyState === 1 && client !== socket) { // Optional: exclude sender
+              client.send(broadcastMsgString);
+            }
+          }
+
+          // Publish to cluster if adapter is present
+          if (this.pubSub) {
+            await this.pubSub.publish(this.roomId, { type: "event", data: event });
+          }
+
+          this.eventCountSinceCompaction++;
+          if (this.compactionThreshold && this.eventCountSinceCompaction >= this.compactionThreshold) {
+            this.eventCountSinceCompaction = 0;
+            await this.compact();
+          }
+        } catch (err) {
+          console.error("Error processing message:", err);
         }
-      } catch (err) {
-        console.error("Error processing message:", err);
-      }
+      });
+      this.processQueue().catch(console.error);
     });
 
     const cleanup = async () => {
