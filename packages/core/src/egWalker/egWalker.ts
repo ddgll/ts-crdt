@@ -56,6 +56,7 @@ export class EgWalker {
 	public awarenessStates = new Map<string, unknown>();
 	private eventListeners = new Set<(event: CrdtEvent, isLocal: boolean) => void>();
 	private cachedSortedEvents: CrdtEvent[] = [];
+	private undoStack = new Map<EventID, () => void>();
 	private isAtHead = true;
 
 	/**
@@ -144,7 +145,8 @@ export class EgWalker {
 
 		this.graph.addEvent(event);
 		this.cachedSortedEvents = this.graph.getSortedEvents();
-		this.applyNewEvent(event);
+		const undo = this.applyNewEvent(event);
+		this.undoStack.set(event.id, undo);
 		this.notifyListeners(event, true);
 		return event;
 	}
@@ -179,14 +181,50 @@ export class EgWalker {
 				diffIndex++;
 			}
 
-			if (this.isAtHead && diffIndex === oldSorted.length) {
-				for (let i = diffIndex; i < newSorted.length; i++) {
-					this.applyNewEvent(newSorted[i]);
+			if (this.isAtHead) {
+				let canUndo = true;
+				const undoQueue: (() => void)[] = [];
+				for (let i = oldSorted.length - 1; i >= diffIndex; i--) {
+					const eventId = oldSorted[i].id;
+					const undo = this.undoStack.get(eventId);
+					if (undo) {
+						undoQueue.push(undo);
+					} else {
+						canUndo = false;
+						break;
+					}
+				}
+
+				if (canUndo) {
+					// Undo phase
+					for (const undo of undoQueue) {
+						undo();
+					}
+					for (let i = diffIndex; i < oldSorted.length; i++) {
+						this.undoStack.delete(oldSorted[i].id);
+					}
+
+					// Redo phase
+					for (let i = diffIndex; i < newSorted.length; i++) {
+						const undo = this.applyNewEvent(newSorted[i]);
+						this.undoStack.set(newSorted[i].id, undo);
+					}
+				} else {
+					// Fallback to full rebuild
+					this.doc._setRoot(new YMap(this.doc, []));
+					this.undoStack.clear();
+					for (const ev of newSorted) {
+						const undo = this.applyNewEvent(ev);
+						this.undoStack.set(ev.id, undo);
+					}
 				}
 			} else {
+				// Fallback to full rebuild
 				this.doc._setRoot(new YMap(this.doc, []));
+				this.undoStack.clear();
 				for (const ev of newSorted) {
-					this.applyNewEvent(ev);
+					const undo = this.applyNewEvent(ev);
+					this.undoStack.set(ev.id, undo);
 				}
 			}
 			this.cachedSortedEvents = newSorted;
@@ -201,14 +239,19 @@ export class EgWalker {
 	 * Applies the operation from a single event to the document's state.
 	 * It traverses the path in the operation and applies the change to the target CRDT.
 	 * @param event The event to apply.
+	 * @returns An undo closure that reverses the applied operation.
 	 */
-	private applyNewEvent(event: CrdtEvent) {
+	private applyNewEvent(event: CrdtEvent): () => void {
 		const { op } = event;
+		const undoActions: (() => void)[] = [];
 
 		if (op.type === SNAPSHOT_OP) {
+			const oldRoot = this.doc.getMap();
 			const newRoot = YMap.fromJSON(this.doc, [], op.state);
 			this.doc._setRoot(newRoot);
-			return;
+			return () => {
+				this.doc._setRoot(oldRoot);
+			};
 		}
 
 		let current: YMap | YArray | YText = this.doc.getMap();
@@ -248,7 +291,8 @@ export class EgWalker {
 						// For intermediate paths, always create a YMap.
 						next = new YMap(this.doc, newPath);
 					}
-					current._applySet(key as string, next);
+					const undoSet = current._applySet(key as string, next);
+					if (undoSet) undoActions.push(undoSet);
 				}
 			} else if (current instanceof YArray) {
 				next = current.get(key as number) as
@@ -278,21 +322,21 @@ export class EgWalker {
 		switch (op.type) {
 			case MAP_SET_OP:
 				if (target instanceof YMap) {
-					target._applySet(op.key, op.value, event.id);
+					undoActions.push(target._applySet(op.key, op.value, event.id));
 				} else {
 					throw new EgWalkerError("Target for map-set is not a YMap");
 				}
 				break;
 			case MAP_DELETE_OP:
 				if (target instanceof YMap) {
-					target._applyDelete(op.key);
+					undoActions.push(target._applyDelete(op.key));
 				} else {
 					throw new EgWalkerError("Target for map-delete is not a YMap");
 				}
 				break;
 			case ARRAY_INSERT_OP:
 				if (target instanceof YArray) {
-					target._applyInsert(event.id, op.afterId, op.values);
+					undoActions.push(target._applyInsert(event.id, op.afterId, op.values));
 				} else {
 					throw new EgWalkerError(
 						"Target for array-insert is not a YArray",
@@ -301,7 +345,7 @@ export class EgWalker {
 				break;
 			case ARRAY_DELETE_OP:
 				if (target instanceof YArray) {
-					target._applyDelete(op.targetIds);
+					undoActions.push(target._applyDelete(op.targetIds));
 				} else {
 					throw new EgWalkerError(
 						"Target for array-delete is not a YArray",
@@ -310,7 +354,7 @@ export class EgWalker {
 				break;
 			case ARRAY_REPLACE_OP:
 				if (target instanceof YArray) {
-					target._applyReplace(event.id, op.values);
+					undoActions.push(target._applyReplace(event.id, op.values));
 				} else {
 					throw new EgWalkerError(
 						`Target for array-replace is not a YArray, but a ${target.constructor.name} at path ${
@@ -321,7 +365,7 @@ export class EgWalker {
 				break;
 			case TEXT_INSERT_OP:
 				if (target instanceof YText) {
-					target._applyInsert(event.id, op.afterId, op.text);
+					undoActions.push(target._applyInsert(event.id, op.afterId, op.text));
 				} else {
 					throw new EgWalkerError(
 						"Target for text-insert is not a YText",
@@ -330,7 +374,7 @@ export class EgWalker {
 				break;
 			case TEXT_FORMAT_OP:
 				if (target instanceof YText) {
-					target._applyFormat(op.targetIds, op.attributes);
+					undoActions.push(target._applyFormat(op.targetIds, op.attributes));
 				} else {
 					throw new EgWalkerError(
 						"Target for text-format is not a YText",
@@ -339,7 +383,7 @@ export class EgWalker {
 				break;
 			case TEXT_DELETE_OP:
 				if (target instanceof YText) {
-					target._applyDelete(op.targetIds);
+					undoActions.push(target._applyDelete(op.targetIds));
 				} else {
 					throw new EgWalkerError(
 						"Target for text-delete is not a YText",
@@ -347,6 +391,12 @@ export class EgWalker {
 				}
 				break;
 		}
+
+		return () => {
+			for (let i = undoActions.length - 1; i >= 0; i--) {
+				undoActions[i]();
+			}
+		};
 	}
 
 	/**
@@ -399,6 +449,7 @@ export class EgWalker {
 
 		const newRoot = YMap.fromJSON(this.doc, [], snapshot.doc);
 		this.doc._setRoot(newRoot);
+		this.undoStack.clear();
 		this.cachedSortedEvents = this.graph.getSortedEvents();
 		this.isAtHead = true;
 	}
@@ -414,10 +465,12 @@ export class EgWalker {
 
 		// Reset the document state
 		this.doc._setRoot(new YMap(this.doc, []));
+		this.undoStack.clear();
 
 		// Re-apply events in order
 		for (const event of sortedEvents) {
-			this.applyNewEvent(event);
+			const undo = this.applyNewEvent(event);
+			this.undoStack.set(event.id, undo);
 		}
 
 		if (this.graph.isCriticalVersion(version)) {

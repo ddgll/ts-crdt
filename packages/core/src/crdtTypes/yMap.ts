@@ -59,22 +59,51 @@ export class YMap {
 	 * @param key The key to set.
 	 * @param value The value to set.
 	 * @param eventId The event ID (used for last-writer-wins conflict resolution).
+	 * @returns An undo closure.
 	 * @internal
 	 */
-	_applySet(key: string, value: unknown, eventId?: string) {
+	_applySet(key: string, value: unknown, eventId?: string): () => void {
 		const existing = this._map.get(key);
+		const capturedValue = existing?.value;
+		const capturedEventId = existing?.eventId;
+		const didExist = existing !== undefined;
+
+		let applied = false;
 		if (!existing || !eventId || !existing.eventId || compareEventIds(eventId, existing.eventId) >= 0) {
 			this._map.set(key, { value, eventId });
+			applied = true;
 		}
+
+		return () => {
+			if (applied) {
+				if (didExist) {
+					this._map.set(key, { value: capturedValue, eventId: capturedEventId });
+				} else {
+					this._map.delete(key);
+				}
+			}
+		};
 	}
 
 	/**
 	 * Applies a delete operation to the map's internal state.
 	 * @param key The key to delete.
+	 * @returns An undo closure.
 	 * @internal
 	 */
-	_applyDelete(key: string) {
+	_applyDelete(key: string): () => void {
+		const existing = this._map.get(key);
+		const capturedValue = existing?.value;
+		const capturedEventId = existing?.eventId;
+		const didExist = existing !== undefined;
+
 		this._map.delete(key);
+
+		return () => {
+			if (didExist) {
+				this._map.set(key, { value: capturedValue, eventId: capturedEventId });
+			}
+		};
 	}
 
 

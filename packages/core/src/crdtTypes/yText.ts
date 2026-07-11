@@ -155,9 +155,10 @@ export class YText {
 	 * @param eventId The ID of the event triggering the insert.
 	 * @param afterId The ID of the character to insert after.
 	 * @param text The text to insert.
+	 * @returns An undo closure.
 	 * @internal
 	 */
-	_applyInsert(eventId: string, afterId: string | null, text: string) {
+	_applyInsert(eventId: string, afterId: string | null, text: string): () => void {
 		let insertIdx = 0;
 		if (afterId !== null) {
 			const idx = this._idIndex.get(afterId);
@@ -191,38 +192,73 @@ export class YText {
 		for (let i = insertIdx; i < this._data.length; i++) {
 			this._idIndex.set(this._data[i].id, i);
 		}
+
+		const insertedIds = newItems.map(item => item.id);
+		return () => {
+			this._data = this._data.filter(item => !insertedIds.includes(item.id));
+			this._idIndex.clear();
+			for (let i = 0; i < this._data.length; i++) {
+				this._idIndex.set(this._data[i].id, i);
+			}
+		};
 	}
 
 	/**
 	 * Internal method to apply a text deletion from an event.
 	 * @param targetIds The IDs of the characters to delete.
+	 * @returns An undo closure.
 	 * @internal
 	 */
-	_applyDelete(targetIds: string[]) {
+	_applyDelete(targetIds: string[]): () => void {
+		const toggledIds: string[] = [];
 		for (const id of targetIds) {
 			const idx = this._idIndex.get(id);
 			if (idx !== undefined) {
-				this._data[idx].isDeleted = true;
+				if (!this._data[idx].isDeleted) {
+					this._data[idx].isDeleted = true;
+					toggledIds.push(id);
+				}
 			}
 		}
+
+		return () => {
+			for (const id of toggledIds) {
+				const idx = this._idIndex.get(id);
+				if (idx !== undefined) {
+					this._data[idx].isDeleted = false;
+				}
+			}
+		};
 	}
 
 	/**
 	 * Internal method to apply formatting from an event.
 	 * @param targetIds The IDs of the characters to format.
 	 * @param attributes The formatting attributes to apply.
+	 * @returns An undo closure.
 	 * @internal
 	 */
 	_applyFormat(
 		targetIds: string[],
 		attributes: Record<string, unknown>,
-	) {
+	): () => void {
+		const oldAttributes: { id: string, attrs: Record<string, unknown> }[] = [];
 		for (const id of targetIds) {
 			const idx = this._idIndex.get(id);
 			if (idx !== undefined) {
+				oldAttributes.push({ id, attrs: { ...this._data[idx].attributes } });
 				this._data[idx].attributes = { ...this._data[idx].attributes, ...attributes };
 			}
 		}
+
+		return () => {
+			for (const { id, attrs } of oldAttributes) {
+				const idx = this._idIndex.get(id);
+				if (idx !== undefined) {
+					this._data[idx].attributes = attrs;
+				}
+			}
+		};
 	}
 
 	/**

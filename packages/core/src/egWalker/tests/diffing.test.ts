@@ -31,7 +31,7 @@ describe("Single-event state diffing for concurrent edits", () => {
 		expect(docB.getMap().get("key3")).toBe("B");
 	});
 
-	it("should rebuild state when concurrent event sorts in the middle", () => {
+	it("should NOT rebuild state when concurrent event sorts in the middle, but use undo/redo instead", () => {
 		const docA = new Doc("replicaA");
 		const docB = new Doc("replicaB");
 
@@ -51,12 +51,11 @@ describe("Single-event state diffing for concurrent edits", () => {
 		const event3 = docB.egWalker.graph.getChangesSince([event1.id])[0];
 
 		// Because seq 0 < seq 1, event3 (replicaB:0) sorts BEFORE event2 (replicaA:1).
-		// Therefore, when A integrates event3, it has to rebuild the state because event3
-		// sorts before A's local event.
+		// Therefore, when A integrates event3, it used to rebuild the state. Now it uses undo/redo.
 		docA.egWalker.integrateRemote([event3]);
 
-		// Ensure it did rebuild
-		expect(setRootSpyA).toHaveBeenCalled();
+		// Ensure it did NOT rebuild
+		expect(setRootSpyA).not.toHaveBeenCalled();
 		expect(docA.getMap().get("key2")).toBe("A");
 		expect(docA.getMap().get("key3")).toBe("B");
 	});

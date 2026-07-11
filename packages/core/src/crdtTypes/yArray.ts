@@ -123,9 +123,10 @@ export class YArray {
 	 * @param eventId The ID of the event triggering the insert.
 	 * @param afterId The ID of the element to insert after.
 	 * @param values The values to insert.
+	 * @returns An undo closure.
 	 * @internal
 	 */
-	_applyInsert(eventId: string, afterId: string | null, values: unknown[]) {
+	_applyInsert(eventId: string, afterId: string | null, values: unknown[]): () => void {
 		let insertIdx = 0;
 		if (afterId !== null) {
 			const idx = this._idIndex.get(afterId);
@@ -161,35 +162,63 @@ export class YArray {
 			this._idIndex.set(this._data[i].id, i);
 		}
 		this._activeCount += values.length;
+
+		const insertedIds = newItems.map(item => item.id);
+		return () => {
+			this._data = this._data.filter(item => !insertedIds.includes(item.id));
+			this._idIndex.clear();
+			for (let i = 0; i < this._data.length; i++) {
+				this._idIndex.set(this._data[i].id, i);
+			}
+			this._activeCount -= values.length;
+		};
 	}
 
 	/**
 	 * Applies a delete operation to the array's internal state.
 	 * @param targetIds The IDs of the elements to delete.
+	 * @returns An undo closure.
 	 * @internal
 	 */
-	_applyDelete(targetIds: string[]) {
+	_applyDelete(targetIds: string[]): () => void {
+		const toggledIds: string[] = [];
 		for (const id of targetIds) {
 			const idx = this._idIndex.get(id);
 			if (idx !== undefined) {
 				if (!this._data[idx].isDeleted) {
 					this._data[idx].isDeleted = true;
 					this._activeCount--;
+					toggledIds.push(id);
 				}
 			}
 		}
+
+		return () => {
+			for (const id of toggledIds) {
+				const idx = this._idIndex.get(id);
+				if (idx !== undefined) {
+					this._data[idx].isDeleted = false;
+					this._activeCount++;
+				}
+			}
+		};
 	}
 
 	/**
 	 * Applies a replace operation to the array's internal state.
 	 * @param eventId The ID of the replace event.
 	 * @param values The new values for the array.
+	 * @returns An undo closure.
 	 * @internal
 	 */
-	_applyReplace(eventId: string, values: unknown[]) {
+	_applyReplace(eventId: string, values: unknown[]): () => void {
+		const toggledIds: string[] = [];
 		// Mark everything as deleted
 		for (const item of this._data) {
-			item.isDeleted = true;
+			if (!item.isDeleted) {
+				item.isDeleted = true;
+				toggledIds.push(item.id);
+			}
 		}
 		this._activeCount = values.length;
 		// Insert new values at the end (or anywhere, since everything else is deleted)
@@ -204,6 +233,23 @@ export class YArray {
 		for (let i = insertIdx; i < this._data.length; i++) {
 			this._idIndex.set(this._data[i].id, i);
 		}
+
+		const newIds = newItems.map(i => i.id);
+		return () => {
+			this._data = this._data.filter(item => !newIds.includes(item.id));
+			this._idIndex.clear();
+			for (let i = 0; i < this._data.length; i++) {
+				this._idIndex.set(this._data[i].id, i);
+			}
+
+			for (const id of toggledIds) {
+				const idx = this._idIndex.get(id);
+				if (idx !== undefined) {
+					this._data[idx].isDeleted = false;
+				}
+			}
+			this._activeCount = toggledIds.length;
+		};
 	}
 
 	/**
