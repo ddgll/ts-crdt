@@ -254,11 +254,11 @@ export class YArray {
 			if (!item.isDeleted) {
 				let val = item.value;
 				if (val instanceof YMap) {
-					val = { crdtType: "YMap", data: val.toJSON() };
+					val = { __crdt_type: "YMap", data: val.toJSON() };
 				} else if (val instanceof YArray) {
-					val = { crdtType: "YArray", data: val.toJSON() };
+					val = { __crdt_type: "YArray", data: val.toJSON() };
 				} else if (val instanceof YText) {
-					val = { crdtType: "YText", data: val.toString() };
+					val = { __crdt_type: "YText", data: val.toString() };
 				}
 				result.push(val);
 			}
@@ -275,11 +275,11 @@ export class YArray {
 		for (const item of this._data) {
 			let val = item.value;
 			if (val instanceof YMap) {
-				val = { crdtType: "YMap", data: val.toSnapshot() };
+				val = { __crdt_type: "YMap", data: val.toSnapshot() };
 			} else if (val instanceof YArray) {
-				val = { crdtType: "YArray", data: val.toSnapshot() };
+				val = { __crdt_type: "YArray", data: val.toSnapshot() };
 			} else if (val instanceof YText) {
-				val = { crdtType: "YText", data: val.toSnapshot() };
+				val = { __crdt_type: "YText", data: val.toSnapshot() };
 			}
 			result.push({
 				id: item.id,
@@ -313,14 +313,14 @@ export class YArray {
 			if (
 				itemData &&
 				typeof itemData === "object" &&
-				"crdtType" in itemData &&
+				"__crdt_type" in itemData &&
 				"data" in itemData
 			) {
-				const { crdtType, data } = itemData as {
-					crdtType: string;
+				const { __crdt_type, data } = itemData as {
+					__crdt_type: string;
 					data: unknown;
 				};
-				switch (crdtType) {
+				switch (__crdt_type) {
 					case "YMap":
 						parsedValue = YMap.fromJSON(
 							doc,
@@ -377,11 +377,11 @@ export class YArray {
 			if (
 				itemData.value &&
 				typeof itemData.value === "object" &&
-				"crdtType" in itemData.value &&
+				"__crdt_type" in itemData.value &&
 				"data" in itemData.value
 			) {
-				const { crdtType, data } = itemData.value;
-				switch (crdtType) {
+				const { __crdt_type, data } = itemData.value;
+				switch (__crdt_type) {
 					case "YMap":
 						parsedValue = YMap.fromSnapshot(
 							doc,

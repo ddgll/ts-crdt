@@ -19,7 +19,7 @@ describe("Path Traversal and Conflict Resolution", () => {
 		doc1.egWalker.integrateRemote(doc2Events);
 
 		// "replica-2" > "replica-1", so the container created by doc2 should win.
-		expect(doc1.getMap().toJSON()).toEqual({ a: { crdtType: "YMap", data: { b: "nested-value" } } });
+		expect(doc1.getMap().toJSON()).toEqual({ a: { __crdt_type: "YMap", data: { b: "nested-value" } } });
 		expect(doc1.getMap().toJSON()).toEqual(doc2.getMap().toJSON());
 	});
 

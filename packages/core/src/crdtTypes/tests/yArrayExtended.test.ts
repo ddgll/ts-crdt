@@ -23,7 +23,7 @@ describe("YArray extended coverage", () => {
         const doc = new Doc();
         const json = [
             {
-                crdtType: "YMap",
+                __crdt_type: "YMap",
                 data: {
                     key: "value"
                 }
@@ -39,7 +39,7 @@ describe("YArray extended coverage", () => {
         const doc = new Doc();
         const json = [
             {
-                crdtType: "YArray",
+                __crdt_type: "YArray",
                 data: ["nested"]
             }
         ];
@@ -54,7 +54,7 @@ describe("YArray extended coverage", () => {
         const json = [
             "primitive",
             {
-                crdtType: "YMap",
+                __crdt_type: "YMap",
                 data: { key: "value" }
             }
         ];
@@ -76,11 +76,11 @@ describe("YArray extended coverage", () => {
         const doc = new Doc();
         const json = [
             {
-                crdtType: "YMap",
+                __crdt_type: "YMap",
                 data: { key: "value" }
             },
             {
-                crdtType: "YArray",
+                __crdt_type: "YArray",
                 data: ["nested"]
             }
         ];

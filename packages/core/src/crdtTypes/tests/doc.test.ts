@@ -11,8 +11,10 @@ describe("Doc", () => {
 
     const expected = {
       user: {
-        crdtType: "YMap",
-        data: { name: "David" },
+        __crdt_type: "YMap",
+        data: {
+          name: "David",
+        },
       },
     };
     expect(doc.toJSON()).toEqual(expected);

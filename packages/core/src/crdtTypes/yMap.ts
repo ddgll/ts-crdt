@@ -198,11 +198,11 @@ export class YMap {
 		for (const [key, wrapper] of this._map.entries()) {
 			const value = wrapper.value;
 			if (value instanceof YMap) {
-				obj[key] = { crdtType: "YMap", data: value.toJSON() };
+				obj[key] = { __crdt_type: "YMap", data: value.toJSON() };
 			} else if (value instanceof YArray) {
-				obj[key] = { crdtType: "YArray", data: value.toJSON() };
+				obj[key] = { __crdt_type: "YArray", data: value.toJSON() };
 			} else if (value instanceof YText) {
-				obj[key] = { crdtType: "YText", data: value.toString() };
+				obj[key] = { __crdt_type: "YText", data: value.toString() };
 			} else {
 				obj[key] = value;
 			}
@@ -220,11 +220,11 @@ export class YMap {
 			const value = wrapper.value;
 			let snapValue: unknown;
 			if (value instanceof YMap) {
-				snapValue = { crdtType: "YMap", data: value.toSnapshot() };
+				snapValue = { __crdt_type: "YMap", data: value.toSnapshot() };
 			} else if (value instanceof YArray) {
-				snapValue = { crdtType: "YArray", data: value.toSnapshot() };
+				snapValue = { __crdt_type: "YArray", data: value.toSnapshot() };
 			} else if (value instanceof YText) {
-				snapValue = { crdtType: "YText", data: value.toSnapshot() };
+				snapValue = { __crdt_type: "YText", data: value.toSnapshot() };
 			} else {
 				snapValue = value;
 			}
@@ -269,10 +269,10 @@ export class YMap {
 		const map = new YMap(doc, path);
 		for (const key in json) {
 			const value = json[key] as
-				| { crdtType: string; data: Record<string, unknown> }
+				| { __crdt_type: string; data: Record<string, unknown> }
 				| Record<string, unknown>;
-			if (value && typeof value === "object" && "crdtType" in value) {
-				switch (value.crdtType) {
+			if (value && typeof value === "object" && "__crdt_type" in value) {
+				switch (value.__crdt_type) {
 					case "YMap":
 						map._applySet(
 							key,
@@ -328,12 +328,12 @@ export class YMap {
 		for (const key in snapshot) {
 			const wrapper = snapshot[key] as { value: unknown; eventId?: string };
 			const value = wrapper.value as
-				| { crdtType: string; data: unknown }
+				| { __crdt_type: string; data: unknown }
 				| unknown;
 			let parsedValue = value;
-			if (value && typeof value === "object" && "crdtType" in value) {
-				const typedValue = value as { crdtType: string; data: unknown };
-				switch (typedValue.crdtType) {
+			if (value && typeof value === "object" && "__crdt_type" in value) {
+				const typedValue = value as { __crdt_type: string; data: unknown };
+				switch (typedValue.__crdt_type) {
 					case "YMap":
 						parsedValue = YMap.fromSnapshot(
 							doc,

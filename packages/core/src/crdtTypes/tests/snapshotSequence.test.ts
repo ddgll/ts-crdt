@@ -36,4 +36,20 @@ describe("loadStateSnapshot sequence number handling", () => {
 		const event = doc2.getMap().set("keyA", "valA");
 		expect(event.id).toBe("replica-2:0");
 	});
+	it("should not instantiate a corrupted CRDT instance if a user explicitly sets an object with crdtType", () => {
+		const doc1 = new Doc("replica-1");
+		const map1 = doc1.getMap();
+		map1.set("key", { crdtType: "YMap", data: "malicious" });
+		
+		const snapshot = doc1.egWalker.getStateSnapshot();
+		const doc2 = new Doc("replica-2");
+		doc2.egWalker.loadStateSnapshot(snapshot);
+		
+		const reloadedMap = doc2.getMap();
+		const val = reloadedMap.get("key");
+		// Ensure it is loaded back as a plain object and not a corrupted YMap instance.
+		expect(val).toEqual({ crdtType: "YMap", data: "malicious" });
+		expect(val instanceof Object).toBe(true);
+		expect((val as any).get).toBeUndefined(); // Should not have CRDT methods
+	});
 });
