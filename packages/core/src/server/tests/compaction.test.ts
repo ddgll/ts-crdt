@@ -198,4 +198,46 @@ describe("Event Graph Compaction", () => {
     expect(isCompactingDb).toBe(false);
     expect(savedEvents.length).toBe(2);
   });
+
+  it("should use monotonically increasing sequence numbers for snapshot events", async () => {
+    let savedEvents: CrdtEvent[] = [];
+    const mockRepo: Repository = {
+      getEvents: async () => savedEvents,
+      saveEvents: async (events) => {
+        savedEvents.push(...events);
+      },
+      clearEvents: async () => {
+        savedEvents = [];
+      }
+    };
+
+    const server = new CrdtServer("test-room-seq", mockRepo, { compactionThreshold: 5 });
+    await server.initialize();
+    
+    const doc = new Doc("client-seq");
+    doc.egWalker.integrateRemote(
+      server.getDoc().egWalker.graph.topologicalSort(
+        server.getDoc().egWalker.graph.getEvents(server.getDoc().egWalker.getVersion())
+      )
+    );
+
+    // trigger 1st compaction using the server's doc
+    server.getDoc().getMap().set("k1", "v1");
+    await server.compact();
+    // Wait for the background DB I/O to complete, which unsets isCompacting
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const snapshot1Id = server.getDoc().egWalker.graph.getEvents(server.getDoc().egWalker.getVersion())[0].id;
+
+    // trigger 2nd compaction using the server's doc so it builds on top of the snapshot
+    server.getDoc().getMap().set("k2", "v2");
+    await server.compact();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const snapshot2Id = server.getDoc().egWalker.graph.getEvents(server.getDoc().egWalker.getVersion())[0].id;
+
+    const seq1 = parseInt(snapshot1Id.split(':')[1], 10);
+    const seq2 = parseInt(snapshot2Id.split(':')[1], 10);
+    
+    expect(seq2).toBeGreaterThan(seq1);
+    expect(seq2).toBe(seq1 + 1);
+  });
 });

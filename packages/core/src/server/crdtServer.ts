@@ -80,6 +80,7 @@ export class CrdtServer {
   private isCompacting = false;
   private compactionPromise: Promise<void> | null = null;
   private backgroundEventsBuffer: CrdtEvent[] | null = null;
+  private serverSequenceNumber: number = 0;
 
   private async processQueue() {
     if (this.isProcessingQueue) return;
@@ -123,6 +124,19 @@ export class CrdtServer {
       if (events.length > 0) {
         console.log(`Loading ${events.length} events from the repository.`);
         this.doc.egWalker.integrateRemote(events);
+        
+        // Initialize serverSequenceNumber based on existing server events
+        for (const event of events) {
+          if (event.replicaId === `server-${this.roomId}`) {
+            const parts = event.id.split(':');
+            if (parts.length === 2) {
+              const seq = parseInt(parts[1], 10);
+              if (!isNaN(seq) && seq >= this.serverSequenceNumber) {
+                this.serverSequenceNumber = seq + 1;
+              }
+            }
+          }
+        }
       } else {
         console.log("No existing events. Initializing new document.");
         this.doc.getMap().getArray("content").insert(0, []);
@@ -445,7 +459,7 @@ export class CrdtServer {
         version,
         snapshotState,
         `server-${this.roomId}`,
-        Date.now()
+        this.serverSequenceNumber++
       );
 
       // Replace the internal graph
