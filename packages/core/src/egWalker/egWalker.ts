@@ -286,6 +286,15 @@ export class EgWalker {
 						}
 						const undoSet = current._applySet(key as string, next, event.id);
 						if (undoSet) undoActions.push(undoSet);
+
+						// If the container failed to attach due to LWW conflict, halt traversal gracefully
+						if (current._getWrapper(key as string)?.eventId !== event.id) {
+							return () => {
+								for (let j = undoActions.length - 1; j >= 0; j--) {
+									undoActions[j]();
+								}
+							};
+						}
 					} else {
 						// Existing primitive wins, graceful no-op for the rest of this event
 						return () => {
@@ -319,6 +328,15 @@ export class EgWalker {
 					}
 					const undoSet = current._applySet(key as string, next, event.id);
 					if (undoSet) undoActions.push(undoSet);
+
+					// If the container failed to attach due to LWW conflict, halt traversal gracefully
+					if (current._getWrapper(key as string)?.eventId !== event.id) {
+						return () => {
+							for (let j = undoActions.length - 1; j >= 0; j--) {
+								undoActions[j]();
+							}
+						};
+					}
 				}
 			} else if (current instanceof YArray) {
 				const val: unknown = current.get(key as number);
