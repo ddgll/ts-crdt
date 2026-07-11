@@ -3,7 +3,7 @@ import {
 	ARRAY_INSERT_OP,
 	ARRAY_REPLACE_OP,
 	CrdtEvent,
-	createEventGraph,
+	EventGraph,
 	EventID,
 	MAP_SET_OP,
 	MAP_DELETE_OP,
@@ -49,7 +49,7 @@ export class EgWalkerError extends Error {
 export class EgWalker {
 	private doc: Doc;
 	/** The underlying event graph instance. */
-	public graph: ReturnType<typeof createEventGraph>;
+	public graph: EventGraph;
 	private replicaId: string;
 	private sequenceNumber = 0;
 	/** A map of awareness states for connected replicas. */
@@ -89,7 +89,7 @@ export class EgWalker {
 	 * @param replicaId An optional unique identifier for this replica.
 	 * @param graph An optional existing event graph to use.
 	 */
-	constructor(doc: Doc, replicaId?: string, graph = createEventGraph()) {
+	constructor(doc: Doc, replicaId?: string, graph = new EventGraph()) {
 		if (replicaId && replicaId.includes(':')) {
 			throw new EgWalkerError("replicaId must not contain ':'");
 		}
@@ -150,46 +150,62 @@ export class EgWalker {
 	}
 
 	/**
+	 * Ingests one or more events into the graph and rebuilds the document state.
+	 * Returns the list of events that were actually new (not duplicates).
+	 */
+	private _ingestEvents(events: CrdtEvent[]): CrdtEvent[] {
+		const oldSorted = this.cachedSortedEvents;
+		const addedEvents: CrdtEvent[] = [];
+
+		for (const event of events) {
+			if (this.graph.getEvent(event.id)) {
+				continue;
+			}
+			if (event.replicaId === this.replicaId) {
+				const eventSequenceNumber = parseInt(event.id.split(":")[1], 10);
+				if (eventSequenceNumber >= this.sequenceNumber) {
+					this.sequenceNumber = eventSequenceNumber + 1;
+				}
+			}
+
+			this.graph.addEvent(event);
+			addedEvents.push(event);
+		}
+
+		if (addedEvents.length > 0) {
+			const newSorted = this.graph.topologicalSort(this.graph.getEvents(this.graph.getVersion()));
+			let diffIndex = 0;
+			while (diffIndex < oldSorted.length && oldSorted[diffIndex].id === newSorted[diffIndex].id) {
+				diffIndex++;
+			}
+
+			if (this.isAtHead && diffIndex === oldSorted.length) {
+				for (let i = diffIndex; i < newSorted.length; i++) {
+					this.applyNewEvent(newSorted[i]);
+				}
+			} else {
+				this.doc._setRoot(new YMap(this.doc, []));
+				for (const ev of newSorted) {
+					this.applyNewEvent(ev);
+				}
+			}
+			this.cachedSortedEvents = newSorted;
+			this.isAtHead = true;
+		}
+
+		return addedEvents;
+	}
+
+	/**
 	 * Adds a remote or local event to the graph and applies it to the document.
 	 * If the event already exists, it is ignored.
 	 * @param event The event to add.
 	 */
 	addEvent(event: CrdtEvent) {
-		if (this.graph.getEvent(event.id)) {
-			return; // Event already exists, no need to re-apply
+		const added = this._ingestEvents([event]);
+		if (added.length > 0) {
+			this.notifyListeners(event, event.replicaId === this.replicaId);
 		}
-		// If the incoming event is from the same replica, we need to update the sequence number
-		// to ensure that the next generated event ID is unique.
-		if (event.replicaId === this.replicaId) {
-			const eventSequenceNumber = parseInt(event.id.split(":")[1], 10);
-			if (eventSequenceNumber >= this.sequenceNumber) {
-				this.sequenceNumber = eventSequenceNumber + 1;
-			}
-		}
-
-		const oldSorted = this.cachedSortedEvents;
-		this.graph.addEvent(event);
-		const newSorted = this.graph.topologicalSort(this.graph.getEvents(this.graph.getVersion()));
-
-		let diffIndex = 0;
-		while (diffIndex < oldSorted.length && oldSorted[diffIndex].id === newSorted[diffIndex].id) {
-			diffIndex++;
-		}
-
-		if (this.isAtHead && diffIndex === oldSorted.length) {
-			for (let i = diffIndex; i < newSorted.length; i++) {
-				this.applyNewEvent(newSorted[i]);
-			}
-		} else {
-			this.doc._setRoot(new YMap(this.doc, []));
-			for (const ev of newSorted) {
-				this.applyNewEvent(ev);
-			}
-		}
-		this.cachedSortedEvents = newSorted;
-		this.isAtHead = true;
-
-		this.notifyListeners(event, event.replicaId === this.replicaId);
 	}
 
 	/**
@@ -273,7 +289,7 @@ export class EgWalker {
 		switch (op.type) {
 			case MAP_SET_OP:
 				if (target instanceof YMap) {
-					target._applySet(op.key, op.value);
+					target._applySet(op.key, op.value, event.id);
 				} else {
 					throw new EgWalkerError("Target for map-set is not a YMap");
 				}
@@ -349,49 +365,8 @@ export class EgWalker {
 	 * @param events The array of events to integrate.
 	 */
 	integrateRemote(events: CrdtEvent[]) {
-		const oldSorted = this.cachedSortedEvents;
-		let anyAdded = false;
-		const addedEvents: CrdtEvent[] = [];
-
-		for (const event of events) {
-			if (this.graph.getEvent(event.id)) {
-				continue;
-			}
-			if (event.replicaId === this.replicaId) {
-				const eventSequenceNumber = parseInt(event.id.split(":")[1], 10);
-				if (eventSequenceNumber >= this.sequenceNumber) {
-					this.sequenceNumber = eventSequenceNumber + 1;
-				}
-			}
-
-			this.graph.addEvent(event);
-			anyAdded = true;
-			addedEvents.push(event);
-		}
-
-		if (anyAdded) {
-			const newSorted = this.graph.topologicalSort(this.graph.getEvents(this.graph.getVersion()));
-			let diffIndex = 0;
-			while (diffIndex < oldSorted.length && oldSorted[diffIndex].id === newSorted[diffIndex].id) {
-				diffIndex++;
-			}
-
-			if (this.isAtHead && diffIndex === oldSorted.length) {
-				for (let i = diffIndex; i < newSorted.length; i++) {
-					this.applyNewEvent(newSorted[i]);
-				}
-			} else {
-				this.doc._setRoot(new YMap(this.doc, []));
-				for (const ev of newSorted) {
-					this.applyNewEvent(ev);
-				}
-			}
-			this.cachedSortedEvents = newSorted;
-			this.isAtHead = true;
-		}
-
-		// Notify listeners AFTER state is fully rebuilt and consistent
-		for (const event of addedEvents) {
+		const added = this._ingestEvents(events);
+		for (const event of added) {
 			this.notifyListeners(event, event.replicaId === this.replicaId);
 		}
 	}
@@ -415,7 +390,7 @@ export class EgWalker {
 	 * @param snapshot The state snapshot to load.
 	 */
 	loadStateSnapshot(snapshot: StateSnapshot) {
-		this.graph = createEventGraph();
+		this.graph = new EventGraph();
 		snapshot.graph.events.forEach(([_, event]) => {
 			this.graph.addEvent(event);
 			if (event.replicaId === this.replicaId) {

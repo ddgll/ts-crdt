@@ -38,6 +38,7 @@ export class YText {
 	private _doc: Doc;
 	private _path: (string | number)[];
 	private _data: YTextItem[] = [];
+	private _idIndex: Map<string, number>;
 
 	/**
 	 * Creates a new YText instance.
@@ -48,6 +49,7 @@ export class YText {
 	constructor(doc: Doc, path: (string | number)[]) {
 		this._doc = doc;
 		this._path = path;
+		this._idIndex = new Map();
 	}
 
 	/**
@@ -158,8 +160,8 @@ export class YText {
 	_applyInsert(eventId: string, afterId: string | null, text: string) {
 		let insertIdx = 0;
 		if (afterId !== null) {
-			const idx = this._data.findIndex(item => item.id === afterId);
-			if (idx !== -1) {
+			const idx = this._idIndex.get(afterId);
+			if (idx !== undefined) {
 				insertIdx = idx + 1;
 				// RGA tie-breaking: skip past siblings with smaller event IDs
 				while (insertIdx < this._data.length) {
@@ -186,6 +188,9 @@ export class YText {
 		}
 
 		this._data.splice(insertIdx, 0, ...newItems);
+		for (let i = insertIdx; i < this._data.length; i++) {
+			this._idIndex.set(this._data[i].id, i);
+		}
 	}
 
 	/**
@@ -194,10 +199,10 @@ export class YText {
 	 * @internal
 	 */
 	_applyDelete(targetIds: string[]) {
-		const targetSet = new Set(targetIds);
-		for (const item of this._data) {
-			if (targetSet.has(item.id)) {
-				item.isDeleted = true;
+		for (const id of targetIds) {
+			const idx = this._idIndex.get(id);
+			if (idx !== undefined) {
+				this._data[idx].isDeleted = true;
 			}
 		}
 	}
@@ -212,10 +217,10 @@ export class YText {
 		targetIds: string[],
 		attributes: Record<string, unknown>,
 	) {
-		const targetSet = new Set(targetIds);
-		for (const item of this._data) {
-			if (targetSet.has(item.id)) {
-				item.attributes = { ...item.attributes, ...attributes };
+		for (const id of targetIds) {
+			const idx = this._idIndex.get(id);
+			if (idx !== undefined) {
+				this._data[idx].attributes = { ...this._data[idx].attributes, ...attributes };
 			}
 		}
 	}

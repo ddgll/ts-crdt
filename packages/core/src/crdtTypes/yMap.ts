@@ -1,14 +1,14 @@
 import { YArray } from "./yArray.js";
 import { YText } from "./yText.js";
 import type { Doc } from "./doc.js";
-import { CrdtEvent, MAP_SET_OP, MAP_DELETE_OP } from "../eventGraph/eventGraph.js";
+import { CrdtEvent, MAP_SET_OP, MAP_DELETE_OP, compareEventIds } from "../eventGraph/eventGraph.js";
 
 /**
  * A collaborative map that can be modified by multiple replicas.
  * It supports setting key-value pairs and can contain nested CRDTs.
  */
 export class YMap {
-	private _map: Map<string, unknown>;
+	private _map: Map<string, { value: unknown; eventId?: string }>;
 	private _doc: Doc;
 	private _path: (string | number)[];
 
@@ -58,10 +58,14 @@ export class YMap {
 	 * Applies a set operation to the map's internal state.
 	 * @param key The key to set.
 	 * @param value The value to set.
+	 * @param eventId The event ID (used for last-writer-wins conflict resolution).
 	 * @internal
 	 */
-	_applySet(key: string, value: unknown) {
-		this._map.set(key, value);
+	_applySet(key: string, value: unknown, eventId?: string) {
+		const existing = this._map.get(key);
+		if (!existing || !eventId || !existing.eventId || compareEventIds(eventId, existing.eventId) >= 0) {
+			this._map.set(key, { value, eventId });
+		}
 	}
 
 	/**
@@ -81,7 +85,7 @@ export class YMap {
 	 * @returns The value associated with the key, or undefined if the key does not exist.
 	 */
 	get(key: string): unknown {
-		return this._map.get(key);
+		return this._map.get(key)?.value;
 	}
 
 	/**
@@ -93,7 +97,8 @@ export class YMap {
 	 * @returns The nested YMap instance.
 	 */
 	getMap(key: string): YMap {
-		const map = this._map.get(key);
+		const wrapper = this._map.get(key);
+		const map = wrapper?.value;
 		if (map === undefined) {
 			const newMap = new YMap(this._doc, [...this._path, key]);
 			this._applySet(key, newMap);
@@ -114,7 +119,8 @@ export class YMap {
 	 * @returns The nested YArray instance.
 	 */
 	getArray(key: string): YArray {
-		const array = this._map.get(key);
+		const wrapper = this._map.get(key);
+		const array = wrapper?.value;
 		if (array === undefined) {
 			const newArray = new YArray(this._doc, [...this._path, key]);
 			this._applySet(key, newArray);
@@ -135,7 +141,8 @@ export class YMap {
 	 * @returns The nested YText instance.
 	 */
 	getText(key: string): YText {
-		const text = this._map.get(key);
+		const wrapper = this._map.get(key);
+		const text = wrapper?.value;
 		if (text === undefined) {
 			const newText = new YText(this._doc, [...this._path, key]);
 			this._applySet(key, newText);
@@ -153,7 +160,8 @@ export class YMap {
 	 */
 	toJSON(): Record<string, unknown> {
 		const obj: { [key: string]: unknown } = {};
-		for (const [key, value] of this._map.entries()) {
+		for (const [key, wrapper] of this._map.entries()) {
+			const value = wrapper.value;
 			if (value instanceof YMap) {
 				obj[key] = { crdtType: "YMap", data: value.toJSON() };
 			} else if (value instanceof YArray) {
@@ -174,8 +182,10 @@ export class YMap {
 	 * @param other The other YMap to merge.
 	 */
 	merge(other: YMap) {
-		for (const [key, value] of other._map.entries()) {
-			const existingValue = this._map.get(key);
+		for (const [key, wrapper] of other._map.entries()) {
+			const value = wrapper.value;
+			const existingWrapper = this._map.get(key);
+			const existingValue = existingWrapper?.value;
 			if (existingValue instanceof YMap && value instanceof YMap) {
 				existingValue.merge(value);
 			} else if (value instanceof YMap) {

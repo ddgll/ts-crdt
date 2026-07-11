@@ -246,62 +246,67 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 }
 
 /**
- * Creates a new EventGraph instance.
- * The EventGraph is a data structure that stores the history of all operations as a DAG.
- * @returns An object with methods to interact with the event graph.
+ * Compares two event IDs deterministically.
+ * @param id1 The first event ID.
+ * @param id2 The second event ID.
+ * @returns A negative number if id1 < id2, a positive number if id1 > id2, or 0 if equal.
  */
-export function createEventGraph() {
-	const events = new Map<EventID, CrdtEvent>();
-	const children = new Map<EventID, Set<EventID>>();
-	const heads = new Set<EventID>();
+export function compareEventIds(id1: string, id2: string): number {
+	const [rep1, seq1Str] = id1.split(':');
+	const [rep2, seq2Str] = id2.split(':');
+	const seq1 = parseInt(seq1Str, 10);
+	const seq2 = parseInt(seq2Str, 10);
+	if (seq1 !== seq2) return seq1 - seq2;
+	return rep1.localeCompare(rep2);
+}
+
+/**
+ * The EventGraph is a data structure that stores the history of all operations as a DAG.
+ */
+export class EventGraph {
+	private events = new Map<EventID, CrdtEvent>();
+	private children = new Map<EventID, Set<EventID>>();
+	private heads = new Set<EventID>();
 
 	/**
 	 * Adds a new event to the graph after validating it.
 	 * @param event The event to add.
 	 * @throws {EventGraphError} if the event is invalid (e.g., missing parents, circular dependency).
 	 */
-	function addEvent(event: CrdtEvent) {
+	addEvent(event: CrdtEvent): void {
 		const op = event.op;
 		switch (op.type) {
 			case MAP_SET_OP:
-				break;
 			case MAP_DELETE_OP:
-				break;
 			case ARRAY_INSERT_OP:
-				break;
 			case ARRAY_DELETE_OP:
-				break;
 			case ARRAY_REPLACE_OP:
-				break;
 			case TEXT_INSERT_OP:
-				break;
 			case TEXT_FORMAT_OP:
-				break;
 			case TEXT_DELETE_OP:
-				break;
 			case SNAPSHOT_OP:
 				break;
 			default:
 				throw new EventGraphError("Invalid operation type");
 		}
-		if (events.has(event.id)) {
+		if (this.events.has(event.id)) {
 			return;
 		}
-		const hasMissingParent = event.parents.some((id) => !events.has(id));
+		const hasMissingParent = event.parents.some((id) => !this.events.has(id));
 		if (hasMissingParent) {
 			throw new EventGraphError("Invalid parent");
 		}
 		if (event.parents.includes(event.id)) {
 			throw new EventGraphError("Event cannot be its own parent");
 		}
-		events.set(event.id, event);
-		heads.add(event.id);
+		this.events.set(event.id, event);
+		this.heads.add(event.id);
 		for (const parentId of event.parents) {
-			heads.delete(parentId);
-			if (!children.has(parentId)) {
-				children.set(parentId, new Set());
+			this.heads.delete(parentId);
+			if (!this.children.has(parentId)) {
+				this.children.set(parentId, new Set());
 			}
-			children.get(parentId)!.add(event.id);
+			this.children.get(parentId)!.add(event.id);
 		}
 	}
 
@@ -310,16 +315,16 @@ export function createEventGraph() {
 	 * @param id The ID of the event to retrieve.
 	 * @returns The event, or undefined if not found.
 	 */
-	function getEvent(id: EventID): CrdtEvent | undefined {
-		return events.get(id);
+	getEvent(id: EventID): CrdtEvent | undefined {
+		return this.events.get(id);
 	}
 
 	/**
 	 * Gets the current version of the graph, which is the set of "head" events (those with no children).
 	 * @returns An array of event IDs representing the current version.
 	 */
-	function getVersion(): EventID[] {
-		return Array.from(heads);
+	getVersion(): EventID[] {
+		return Array.from(this.heads);
 	}
 
 	/**
@@ -327,12 +332,12 @@ export function createEventGraph() {
 	 * @param version An array of event IDs representing the starting version.
 	 * @returns An array of all reachable events from the given version.
 	 */
-	function getEvents(version: EventID[]): CrdtEvent[] {
+	getEvents(version: EventID[]): CrdtEvent[] {
 		const reachable = new Set<EventID>(version);
 		const stack = [...version];
 		while (stack.length > 0) {
 			const id = stack.pop()!;
-			const event = getEvent(id);
+			const event = this.getEvent(id);
 			if (event) {
 				for (const parentId of event.parents) {
 					if (!reachable.has(parentId)) {
@@ -343,7 +348,7 @@ export function createEventGraph() {
 			}
 		}
 		return Array.from(reachable)
-			.map((id) => getEvent(id))
+			.map((id) => this.getEvent(id))
 			.filter((e): e is CrdtEvent => e !== undefined);
 	}
 
@@ -352,8 +357,8 @@ export function createEventGraph() {
 	 * @param eventsToSort The array of events to sort.
 	 * @returns A new array containing the sorted events.
 	 */
-	function topologicalSort(eventsToSort: CrdtEvent[]): CrdtEvent[] {
-		const existingEvents = eventsToSort.filter((e) => events.has(e.id));
+	topologicalSort(eventsToSort: CrdtEvent[]): CrdtEvent[] {
+		const existingEvents = eventsToSort.filter((e) => this.events.has(e.id));
 		const eventMap = new Map(existingEvents.map((e) => [e.id, e]));
 		const visited = new Set<EventID>();
 		const inStack = new Set<EventID>();
@@ -361,16 +366,7 @@ export function createEventGraph() {
 
 		// Sort events by ID for deterministic iteration — ensures concurrent
 		// events are always applied in the same order across all replicas.
-		const sortedExisting = [...existingEvents].sort((a, b) => {
-			const [repA, seqAStr] = a.id.split(':');
-			const [repB, seqBStr] = b.id.split(':');
-			const seqA = parseInt(seqAStr, 10);
-			const seqB = parseInt(seqBStr, 10);
-			if (seqA !== seqB) {
-				return seqA - seqB;
-			}
-			return repA.localeCompare(repB);
-		});
+		const sortedExisting = [...existingEvents].sort((a, b) => compareEventIds(a.id, b.id));
 
 		for (const rootEvent of sortedExisting) {
 			if (visited.has(rootEvent.id)) continue;
@@ -416,8 +412,8 @@ export function createEventGraph() {
 	 * @param version The version to check.
 	 * @returns True if the version is the current version, false otherwise.
 	 */
-	function isCriticalVersion(version: EventID[]): boolean {
-		const currentVersion = getVersion();
+	isCriticalVersion(version: EventID[]): boolean {
+		const currentVersion = this.getVersion();
 		if (currentVersion.length === 0) return false;
 		if (currentVersion.length !== version.length) return false;
 		const sortedCurrent = [...currentVersion].sort();
@@ -430,14 +426,14 @@ export function createEventGraph() {
 	 * This can be useful for finding a common ancestor state.
 	 * @returns The event IDs of the last single-headed version, or an empty array if not found.
 	 */
-	function getLastCriticalVersion(): EventID[] {
-		const currentVersionIds = getVersion();
+	getLastCriticalVersion(): EventID[] {
+		const currentVersionIds = this.getVersion();
 		if (currentVersionIds.length === 0) return [];
 		if (currentVersionIds.length === 1) {
 			return currentVersionIds;
 		}
 
-		const allEvents = topologicalSort(getAllEvents());
+		const allEvents = this.topologicalSort(this.getAllEvents());
 		const n = allEvents.length;
 		const eventIndex = new Map<EventID, number>();
 		allEvents.forEach((e, i) => eventIndex.set(e.id, i));
@@ -450,7 +446,7 @@ export function createEventGraph() {
 			ancestors.add(headId);
 			while (stack.length > 0) {
 				const curr = stack.pop()!;
-				const ev = getEvent(curr);
+				const ev = this.getEvent(curr);
 				if (ev) {
 					for (const p of ev.parents) {
 						if (!ancestors.has(p)) {
@@ -485,7 +481,7 @@ export function createEventGraph() {
 			visitedA.add(candidateId);
 			while (stackA.length > 0) {
 				const curr = stackA.pop()!;
-				const ev = getEvent(curr);
+				const ev = this.getEvent(curr);
 				if (ev) {
 					for (const p of ev.parents) {
 						if (!visitedA.has(p)) {
@@ -505,7 +501,7 @@ export function createEventGraph() {
 			visitedD.add(candidateId);
 			while (stackD.length > 0) {
 				const curr = stackD.pop()!;
-				const kids = children.get(curr);
+				const kids = this.children.get(curr);
 				if (kids) {
 					for (const k of kids) {
 						if (!visitedD.has(k)) {
@@ -531,11 +527,11 @@ export function createEventGraph() {
 	 * @param version The version to compare against.
 	 * @returns An array of events that have occurred since the given version.
 	 */
-	function getChangesSince(version: EventID[]): CrdtEvent[] {
-		const knownEvents = getEvents(version);
+	getChangesSince(version: EventID[]): CrdtEvent[] {
+		const knownEvents = this.getEvents(version);
 		const knownEventIds = new Set(knownEvents.map((e) => e.id));
 
-		const allEvents = Array.from(events.values());
+		const allEvents = Array.from(this.events.values());
 		const changes = allEvents.filter((event) =>
 			!knownEventIds.has(event.id)
 		);
@@ -550,7 +546,7 @@ export function createEventGraph() {
 	 * @param b The second event.
 	 * @returns True if `a` is a proper ancestor of `b`, false otherwise.
 	 */
-	function happenedBefore(a: CrdtEvent, b: CrdtEvent): boolean {
+	happenedBefore(a: CrdtEvent, b: CrdtEvent): boolean {
 		if (a.id === b.id) return false;
 		const stack = [a.id];
 		const visited = new Set<EventID>();
@@ -562,7 +558,7 @@ export function createEventGraph() {
 
 			if (currentId === b.id) return true;
 
-			const kids = children.get(currentId);
+			const kids = this.children.get(currentId);
 			if (kids) {
 				for (const kidId of kids) {
 					stack.push(kidId);
@@ -580,7 +576,7 @@ export function createEventGraph() {
 	 * @param snapshotSequence The sequence number to use for the new snapshot event.
 	 * @returns An object containing the new snapshot event and the rewritten remaining events.
 	 */
-	function compact(
+	compact(
 		version: EventID[],
 		snapshotState: Record<string, unknown>,
 		snapshotReplicaId: string,
@@ -596,7 +592,7 @@ export function createEventGraph() {
 			},
 		};
 
-		const eventsToKeep = getChangesSince(version);
+		const eventsToKeep = this.getChangesSince(version);
 		const newEvents: CrdtEvent[] = [];
 		const keptIds = new Set(eventsToKeep.map((e) => e.id));
 
@@ -619,30 +615,24 @@ export function createEventGraph() {
 	 * Gets all events in the graph.
 	 * @returns An array of all events.
 	 */
-	function getAllEvents(): CrdtEvent[] {
-		return Array.from(events.values());
+	getAllEvents(): CrdtEvent[] {
+		return Array.from(this.events.values());
 	}
 
 	/**
 	 * Gets all events in the graph as entries [EventID, CrdtEvent].
 	 * @returns An array of all event entries.
 	 */
-	function getEventEntries(): [EventID, CrdtEvent][] {
-		return Array.from(events.entries());
+	getEventEntries(): [EventID, CrdtEvent][] {
+		return Array.from(this.events.entries());
 	}
+}
 
-	return {
-		addEvent,
-		getEvent,
-		getVersion,
-		getEvents,
-		getChangesSince,
-		topologicalSort,
-		isCriticalVersion,
-		getLastCriticalVersion,
-		happenedBefore,
-		compact,
-		getAllEvents,
-		getEventEntries,
-	};
+/**
+ * Creates a new EventGraph instance.
+ * @deprecated Use `new EventGraph()` instead.
+ * @returns An EventGraph instance.
+ */
+export function createEventGraph(): EventGraph {
+	return new EventGraph();
 }

@@ -26,6 +26,7 @@ export class YArray {
 	private _doc: Doc;
 	private _path: (string | number)[];
 	private _data: YArrayItem[];
+	private _idIndex: Map<string, number>;
 
 	/**
 	 * Creates a new YArray instance.
@@ -37,6 +38,7 @@ export class YArray {
 		this._doc = doc;
 		this._path = path;
 		this._data = [];
+		this._idIndex = new Map();
 	}
 
 	/**
@@ -124,8 +126,8 @@ export class YArray {
 	_applyInsert(eventId: string, afterId: string | null, values: unknown[]) {
 		let insertIdx = 0;
 		if (afterId !== null) {
-			const idx = this._data.findIndex(item => item.id === afterId);
-			if (idx !== -1) {
+			const idx = this._idIndex.get(afterId);
+			if (idx !== undefined) {
 				insertIdx = idx + 1;
 				// RGA tie-breaking: skip past siblings inserted after the
 				// same anchor that have a smaller event ID prefix.
@@ -151,6 +153,11 @@ export class YArray {
 		}));
 
 		this._data.splice(insertIdx, 0, ...newItems);
+
+		// Rebuild index from insertIdx onward (shifted elements)
+		for (let i = insertIdx; i < this._data.length; i++) {
+			this._idIndex.set(this._data[i].id, i);
+		}
 	}
 
 	/**
@@ -159,10 +166,10 @@ export class YArray {
 	 * @internal
 	 */
 	_applyDelete(targetIds: string[]) {
-		const targetSet = new Set(targetIds);
-		for (const item of this._data) {
-			if (targetSet.has(item.id)) {
-				item.isDeleted = true;
+		for (const id of targetIds) {
+			const idx = this._idIndex.get(id);
+			if (idx !== undefined) {
+				this._data[idx].isDeleted = true;
 			}
 		}
 	}
@@ -184,7 +191,12 @@ export class YArray {
 			value: val,
 			isDeleted: false
 		}));
+		const insertIdx = this._data.length;
 		this._data.push(...newItems);
+		
+		for (let i = insertIdx; i < this._data.length; i++) {
+			this._idIndex.set(this._data[i].id, i);
+		}
 	}
 
 	/**
@@ -276,6 +288,9 @@ export class YArray {
 				isDeleted: false
 			};
 		});
+		for (let i = 0; i < arr._data.length; i++) {
+			arr._idIndex.set(arr._data[i].id, i);
+		}
 		return arr;
 	}
 }
