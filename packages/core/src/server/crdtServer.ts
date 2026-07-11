@@ -437,7 +437,8 @@ export class CrdtServer {
         this.doc.egWalker.graph.getEvents(version)
       );
       tempDoc.egWalker.integrateRemote(eventsToApply);
-      tempDoc.gc();
+      // Perform garbage collection to remove tombstones before saving snapshot
+      tempDoc.gc(true);
       const snapshotState = tempDoc.getSnapshot() as Record<string, unknown>;
 
       const { snapshotEvent, remainingEvents } = this.doc.egWalker.graph.compact(

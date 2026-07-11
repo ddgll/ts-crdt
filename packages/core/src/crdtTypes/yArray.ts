@@ -206,15 +206,23 @@ export class YArray {
 
 	/**
 	 * Performs garbage collection by cleanly splicing out elements marked as deleted.
+	 * 
+	 * WARNING: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization.
+	 * It should only be called when all clients are guaranteed to receive a synchronized snapshot to prevent permanent replica divergence.
+	 * 
+	 * @param force Must be explicitly set to true to execute garbage collection.
 	 */
-	gc() {
+	gc(force: boolean = false) {
+		if (!force) {
+			throw new Error("Garbage collection must be explicitly forced by passing true (e.g. gc(true)). Warning: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization if clients are not fully synchronized via snapshots.");
+		}
 		this._data = this._data.filter(item => !item.isDeleted);
 		this._idIndex.clear();
 		for (let i = 0; i < this._data.length; i++) {
 			this._idIndex.set(this._data[i].id, i);
 			const value = this._data[i].value;
 			if (value instanceof YMap || value instanceof YArray || value instanceof YText) {
-				value.gc();
+				value.gc(force);
 			}
 		}
 		this._activeCount = this._data.length;

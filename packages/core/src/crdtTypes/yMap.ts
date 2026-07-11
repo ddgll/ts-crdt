@@ -229,12 +229,20 @@ export class YMap {
 
 	/**
 	 * Performs garbage collection by recursively calling gc() on nested CRDT collections.
+	 * 
+	 * WARNING: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization.
+	 * It should only be called when all clients are guaranteed to receive a synchronized snapshot to prevent permanent replica divergence.
+	 * 
+	 * @param force Must be explicitly set to true to execute garbage collection.
 	 */
-	gc() {
+	gc(force: boolean = false) {
+		if (!force) {
+			throw new Error("Garbage collection must be explicitly forced by passing true (e.g. gc(true)). Warning: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization if clients are not fully synchronized via snapshots.");
+		}
 		for (const wrapper of this._map.values()) {
 			const value = wrapper.value;
 			if (value instanceof YMap || value instanceof YArray || value instanceof YText) {
-				value.gc();
+				value.gc(force);
 			}
 		}
 	}
