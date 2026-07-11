@@ -148,10 +148,10 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 		return false;
 	}
 	const e = event as Record<string, unknown>;
-	if (typeof e.id !== "string") return false;
+	if (typeof e.id !== "string" || !/^[^:]+:\d+$/.test(e.id)) return false;
 	if (typeof e.replicaId !== "string") return false;
 	if (!Array.isArray(e.parents)) return false;
-	if (!e.parents.every((p: unknown) => typeof p === "string")) return false;
+	if (!e.parents.every((p: unknown) => typeof p === "string" && /^[^:]+:\d+$/.test(p))) return false;
 	if (typeof e.op !== "object" || e.op === null) return false;
 	const op = e.op as Record<string, unknown>;
 	switch (op.type) {

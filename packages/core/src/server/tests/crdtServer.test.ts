@@ -183,6 +183,34 @@ describe("Security Hardening Limits", () => {
     warnSpy.mockRestore();
   });
 
+  it("should silently drop events with malformed IDs without crashing", async () => {
+    const repo = new MockRepository();
+    const server = new CrdtServer("default-room", repo);
+    await server.initialize();
+
+    const ws1 = new MockWebSocket();
+    await server.handleConnection(ws1);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const initialEventsCount = repo.events.length;
+
+    // Emit event with invalid ID "foo"
+    ws1.emit("message", JSON.stringify({
+      id: "foo",
+      replicaId: "client1",
+      parents: [],
+      op: { type: "map-set", path: [], key: "k", value: "v" }
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(repo.events.length).toBe(initialEventsCount); // No new event should be saved
+    expect(warnSpy).toHaveBeenCalledWith("Rejected invalid event from client:", expect.any(Object));
+
+    warnSpy.mockRestore();
+  });
+
   it("should apply rate limits to sockets", async () => {
     const repo = new MockRepository();
     const server = new CrdtServer("default-room", repo, {

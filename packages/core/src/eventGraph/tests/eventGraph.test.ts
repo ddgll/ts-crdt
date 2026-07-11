@@ -45,7 +45,7 @@ describe("eventGraph", () => {
   describe("isCrdtEvent", () => {
     it("should return true for a valid map set op", () => {
       const event: CrdtEvent = {
-        id: "1",
+        id: "A:1",
         replicaId: "A",
         parents: [],
         op: { type: MAP_SET_OP, path: [], key: "a", value: 1 },
@@ -54,7 +54,7 @@ describe("eventGraph", () => {
     });
     it("should return true for a valid array insert op", () => {
       const event: CrdtEvent = {
-        id: "1",
+        id: "A:1",
         replicaId: "A",
         parents: [],
         op: { type: ARRAY_INSERT_OP, path: [], afterId: null, values: [1] },
@@ -63,7 +63,7 @@ describe("eventGraph", () => {
     });
     it("should return true for a valid array delete op", () => {
       const event: CrdtEvent = {
-        id: "1",
+        id: "A:1",
         replicaId: "A",
         parents: [],
         op: { type: ARRAY_DELETE_OP, path: [], targetIds: ["A:0"] },
@@ -72,7 +72,7 @@ describe("eventGraph", () => {
     });
     it("should return false for invalid map set op", () => {
       const event = {
-        id: "1",
+        id: "A:1",
         replicaId: "A",
         parents: [],
         op: { type: MAP_SET_OP, key: 123 },
@@ -81,7 +81,7 @@ describe("eventGraph", () => {
     });
     it("should return false for invalid array insert op (values)", () => {
       const event = {
-        id: "1",
+        id: "A:1",
         replicaId: "A",
         parents: [],
         op: { type: ARRAY_INSERT_OP, afterId: null, values: "not-an-array" },
@@ -90,7 +90,7 @@ describe("eventGraph", () => {
     });
     it("should return false for unknown op type", () => {
       const event = {
-        id: "1",
+        id: "A:1",
         replicaId: "A",
         parents: [],
         op: { type: "unknown" },
@@ -98,10 +98,33 @@ describe("eventGraph", () => {
       expect(isCrdtEvent(event)).toBe(false);
     });
 
+    it("should return false for malformed event IDs", () => {
+      const baseEvent = {
+        replicaId: "A",
+        parents: [],
+        op: { type: MAP_SET_OP, path: [], key: "a", value: 1 },
+      };
+      
+      expect(isCrdtEvent({ ...baseEvent, id: "foo" })).toBe(false);
+      expect(isCrdtEvent({ ...baseEvent, id: "foo:" })).toBe(false);
+      expect(isCrdtEvent({ ...baseEvent, id: ":123" })).toBe(false);
+      expect(isCrdtEvent({ ...baseEvent, id: "foo:bar" })).toBe(false);
+    });
+
+    it("should return false for malformed parent IDs", () => {
+      const event = {
+        id: "A:2",
+        replicaId: "A",
+        parents: ["foo"],
+        op: { type: MAP_SET_OP, path: [], key: "a", value: 1 },
+      };
+      expect(isCrdtEvent(event)).toBe(false);
+    });
+
     // Security path tests
     it("should return false for object-typed path segments", () => {
       const event = {
-        id: "1",
+        id: "A:1",
         replicaId: "A",
         parents: [],
         op: { type: MAP_SET_OP, path: [{}], key: "a", value: 1 },
@@ -111,7 +134,7 @@ describe("eventGraph", () => {
     
     it("should return false for map-set with __proto__ key", () => {
       const event = {
-        id: "1",
+        id: "A:1",
         replicaId: "A",
         parents: [],
         op: { type: MAP_SET_OP, path: [], key: "__proto__", value: {} },
@@ -121,7 +144,7 @@ describe("eventGraph", () => {
 
     it("should return false for map-delete with constructor key", () => {
       const event = {
-        id: "1",
+        id: "A:1",
         replicaId: "A",
         parents: [],
         op: { type: "map-delete", path: [], key: "constructor" },
@@ -131,7 +154,7 @@ describe("eventGraph", () => {
 
     it("should return true for valid paths", () => {
       const event = {
-        id: "1",
+        id: "A:1",
         replicaId: "A",
         parents: [],
         op: { type: MAP_SET_OP, path: ["content", 0, "text"], key: "a", value: 1 },
