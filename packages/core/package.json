@@ -37,6 +37,7 @@
     "build": "tsc",
     "dev": "tsc -w",
     "test": "vitest --run",
+    "bench": "vitest bench",
     "lint": "eslint . --ignore-pattern coverage --ignore-pattern dist",
     "type-check": "tsc --noEmit",
     "prepublishOnly": "pnpm run build"

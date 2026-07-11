@@ -5,6 +5,7 @@
   "scripts": {
     "build": "pnpm --filter @ddgll/ts-crdt build",
     "test": "pnpm -r run test",
+    "bench": "pnpm --filter @ddgll/ts-crdt run bench",
     "e2e": "pnpm build && cd packages/demo && pnpm e2e",
     "lint": "pnpm -r run lint",
     "type-check": "pnpm -r run type-check",
