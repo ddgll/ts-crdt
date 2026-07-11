@@ -158,4 +158,34 @@ describe("eventGraph", () => {
       expect(isCrdtEvent(event)).toBe(true);
     });
   });
+
+  describe("topologicalSort", () => {
+    it("should correctly sort parents with sequence numbers > 9", () => {
+      const eventGraph = createEventGraph();
+
+      // Create a graph:
+      // A:1 (root)
+      // A:2 (child of A:1)
+      // A:9 (child of A:1)
+      // A:10 (child of A:9)
+      // B:1 (merges A:10 and A:2)
+
+      const eA1: CrdtEvent = { id: "A:1", replicaId: "A", parents: [], op: { type: MAP_SET_OP, path: [], key: "a", value: 1 } };
+      const eA2: CrdtEvent = { id: "A:2", replicaId: "A", parents: ["A:1"], op: { type: MAP_SET_OP, path: [], key: "a", value: 2 } };
+      const eA9: CrdtEvent = { id: "A:9", replicaId: "A", parents: ["A:1"], op: { type: MAP_SET_OP, path: [], key: "a", value: 9 } };
+      const eA10: CrdtEvent = { id: "A:10", replicaId: "A", parents: ["A:9"], op: { type: MAP_SET_OP, path: [], key: "a", value: 10 } };
+      const eB1: CrdtEvent = { id: "B:1", replicaId: "B", parents: ["A:10", "A:2"], op: { type: MAP_SET_OP, path: [], key: "a", value: 99 } };
+
+      eventGraph.addEvent(eA1);
+      eventGraph.addEvent(eA2);
+      eventGraph.addEvent(eA9);
+      eventGraph.addEvent(eA10);
+      eventGraph.addEvent(eB1);
+
+      const sorted = eventGraph.topologicalSort(eventGraph.getAllEvents());
+      const sortedIds = sorted.map((e) => e.id);
+
+      expect(sortedIds).toEqual(["A:1", "A:2", "A:9", "A:10", "B:1"]);
+    });
+  });
 });

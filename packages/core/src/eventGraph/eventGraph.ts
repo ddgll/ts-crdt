@@ -418,7 +418,7 @@ export class EventGraph {
 			const stack: { event: CrdtEvent; parents: EventID[]; parentIndex: number }[] = [];
 			stack.push({
 				event: rootEvent,
-				parents: [...rootEvent.parents].sort(),
+				parents: [...rootEvent.parents].sort(compareEventIds),
 				parentIndex: 0
 			});
 			inStack.add(rootEvent.id);
@@ -434,7 +434,7 @@ export class EventGraph {
 					if (parentEvent && !visited.has(parentEvent.id) && !inStack.has(parentEvent.id)) {
 						stack.push({
 							event: parentEvent,
-							parents: [...parentEvent.parents].sort(),
+							parents: [...parentEvent.parents].sort(compareEventIds),
 							parentIndex: 0
 						});
 						inStack.add(parentEvent.id);
