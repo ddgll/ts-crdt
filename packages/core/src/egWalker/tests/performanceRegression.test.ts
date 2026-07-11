@@ -16,7 +16,6 @@ describe("Performance regression", () => {
 
         const start = performance.now();
         for (let i = 0; i < 1000; i++) {
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
             const _len = arr.length; // Should be O(1) after Phase 3
         }
         const duration = performance.now() - start;

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Doc } from "../../crdtTypes/doc.js";
-import { CrdtServer, Repository } from "../crdtServer.js";
+import { CrdtServer, Repository, MinimalWebSocket } from "../crdtServer.js";
 import { CrdtEvent } from "../../eventGraph/eventGraph.js";
 
 describe("Event Graph Compaction", () => {
@@ -150,7 +150,7 @@ describe("Event Graph Compaction", () => {
     );
     
     let messageCallback: (data: string) => void = () => {};
-    const mockSocket: any = {
+    const mockSocket = {
       readyState: 1,
       send: (msgString: string) => {
         const msg = JSON.parse(msgString);
@@ -158,10 +158,10 @@ describe("Event Graph Compaction", () => {
           doc.egWalker.loadStateSnapshot(msg.data);
         }
       },
-      on: (event: string, cb: any) => {
+      on: (event: string, cb: (data: string) => void) => {
         if (event === "message") messageCallback = cb;
       },
-    };
+    } as unknown as MinimalWebSocket;
     
     await server.handleConnection(mockSocket);
     

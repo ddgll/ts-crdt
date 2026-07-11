@@ -279,7 +279,7 @@ describe("Security Hardening Limits", () => {
     expect(ws1.closeCalled).toBeGreaterThan(0);
     
     // The messageQueue should not have ballooned
-    expect((server as any).messageQueue.length).toBe(0);
+    expect((server as unknown as { messageQueue: unknown[] }).messageQueue.length).toBe(0);
 
     warnSpy.mockRestore();
   });

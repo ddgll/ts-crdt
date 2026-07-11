@@ -15,8 +15,8 @@ describe("serverInstances lifecycle", () => {
         let closeCb: (() => void) | undefined;
         const mockSocket = {
             readyState: 1,
-            on: (event: string, cb: (...args: any[]) => void) => {
-                if (event === "close") closeCb = cb;
+            on: (event: string, cb: (...args: unknown[]) => void) => {
+                if (event === "close") closeCb = cb as () => void;
             },
             send: vi.fn(),
         } as unknown as MinimalWebSocket;
@@ -51,8 +51,8 @@ describe("serverInstances lifecycle", () => {
         let closeCb: (() => void) | undefined;
         const mockSocket1 = {
             readyState: 1,
-            on: (event: string, cb: (...args: any[]) => void) => {
-                if (event === "close") closeCb = cb;
+            on: (event: string, cb: (...args: unknown[]) => void) => {
+                if (event === "close") closeCb = cb as () => void;
             },
             send: vi.fn(),
         } as unknown as MinimalWebSocket;
