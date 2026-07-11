@@ -43,4 +43,29 @@ describe("YMap Delete Operations", () => {
 		// Both docs should end up in the same state
 		expect(doc1.getMap().get("keyA")).toEqual(doc2.getMap().get("keyA"));
 	});
+
+	it("should retain a tombstone that prevents an older concurrent set from overwriting it", () => {
+		const doc1 = new Doc("replica-1");
+		const doc2 = new Doc("replica-2");
+
+		// doc1 sets: "replica-1:0"
+		const setEvent = doc1.getMap().set("keyA", "updated-by-1");
+		
+		// doc2 deletes: "replica-2:0"
+		const deleteEvent = doc2.getMap().delete("keyA");
+
+		// compareEventIds("replica-2:0", "replica-1:0") > 0.
+		// So doc2's delete should win.
+		
+		// Replicate doc1's set to doc2. doc2 already deleted it, and its delete event ID is larger.
+		// Therefore, the set should be ignored.
+		doc2.egWalker.integrateRemote([setEvent]);
+		expect(doc2.getMap().get("keyA")).toBeUndefined(); // Should still be deleted
+
+		// Replicate doc2's delete to doc1. doc1 already set it, but doc2's delete event ID is larger.
+		// Therefore, the delete should overwrite the set.
+		doc1.egWalker.integrateRemote([deleteEvent]);
+		expect(doc1.getMap().get("keyA")).toBeUndefined();
+	});
 });
+

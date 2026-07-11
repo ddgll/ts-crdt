@@ -357,7 +357,7 @@ export class EgWalker {
 				break;
 			case MAP_DELETE_OP:
 				if (target instanceof YMap) {
-					undoActions.push(target._applyDelete(op.key));
+					undoActions.push(target._applyDelete(op.key, event.id));
 				}
 				break;
 			case ARRAY_INSERT_OP:

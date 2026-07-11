@@ -88,20 +88,29 @@ export class YMap {
 	/**
 	 * Applies a delete operation to the map's internal state.
 	 * @param key The key to delete.
+	 * @param eventId The event ID (used for last-writer-wins conflict resolution).
 	 * @returns An undo closure.
 	 * @internal
 	 */
-	_applyDelete(key: string): () => void {
+	_applyDelete(key: string, eventId: string): () => void {
 		const existing = this._map.get(key);
 		const capturedValue = existing?.value;
 		const capturedEventId = existing?.eventId;
 		const didExist = existing !== undefined;
 
-		this._map.delete(key);
+		let applied = false;
+		if (!existing || !existing.eventId || compareEventIds(eventId, existing.eventId) >= 0) {
+			this._map.set(key, { value: undefined, eventId });
+			applied = true;
+		}
 
 		return () => {
-			if (didExist) {
-				this._map.set(key, { value: capturedValue, eventId: capturedEventId });
+			if (applied) {
+				if (didExist) {
+					this._map.set(key, { value: capturedValue, eventId: capturedEventId });
+				} else {
+					this._map.delete(key);
+				}
 			}
 		};
 	}
@@ -197,6 +206,7 @@ export class YMap {
 		const obj: { [key: string]: unknown } = {};
 		for (const [key, wrapper] of this._map.entries()) {
 			const value = wrapper.value;
+			if (value === undefined) continue;
 			if (value instanceof YMap) {
 				obj[key] = { __crdt_type: "YMap", data: value.toJSON() };
 			} else if (value instanceof YArray) {
