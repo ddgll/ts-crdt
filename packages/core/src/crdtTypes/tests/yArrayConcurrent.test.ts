@@ -68,8 +68,8 @@ describe("YArray and YText Concurrent Edits", () => {
 		doc1.egWalker.integrateRemote([doc2LastEvent]);
 
 		// Both should match perfectly without needing a clear/rebuild.
-		// "replicaA" should deterministically order before "replicaB"
-		expect(doc1.getMap().getArray("arr").toJSON()).toEqual(["Anchor", "FromA", "FromB"]);
-		expect(doc2.getMap().getArray("arr").toJSON()).toEqual(["Anchor", "FromA", "FromB"]);
+		// "replicaB:0" has a smaller sequence number than "replicaA:1", so it orders first
+		expect(doc1.getMap().getArray("arr").toJSON()).toEqual(["Anchor", "FromB", "FromA"]);
+		expect(doc2.getMap().getArray("arr").toJSON()).toEqual(["Anchor", "FromB", "FromA"]);
 	});
 });

@@ -4,6 +4,7 @@ import {
 	ARRAY_DELETE_OP,
 	ARRAY_INSERT_OP,
 	ARRAY_REPLACE_OP,
+	compareEventIds,
 } from "../eventGraph/eventGraph.js";
 
 /**
@@ -137,7 +138,7 @@ export class YArray {
 				while (insertIdx < this._data.length) {
 					const siblingBaseId = this._data[insertIdx].id.split(':').slice(0, 2).join(':');
 					const myBaseId = eventId;
-					if (siblingBaseId < myBaseId) {
+					if (compareEventIds(siblingBaseId, myBaseId) < 0) {
 						insertIdx++;
 					} else {
 						break;

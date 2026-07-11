@@ -3,6 +3,7 @@ import {
 	TEXT_DELETE_OP,
 	TEXT_FORMAT_OP,
 	TEXT_INSERT_OP,
+	compareEventIds,
 } from "../eventGraph/eventGraph.js";
 
 /**
@@ -167,7 +168,7 @@ export class YText {
 				// RGA tie-breaking: skip past siblings with smaller event IDs
 				while (insertIdx < this._data.length) {
 					const siblingBaseId = this._data[insertIdx].id.split(':').slice(0, 2).join(':');
-					if (siblingBaseId < eventId) {
+					if (compareEventIds(siblingBaseId, eventId) < 0) {
 						insertIdx++;
 					} else {
 						break;

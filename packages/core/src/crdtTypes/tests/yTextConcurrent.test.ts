@@ -96,8 +96,8 @@ describe("YText Concurrent Edits", () => {
 		const doc2LastEvent = doc2.egWalker.graph.getAllEvents().find(e => e.op.type === "text-insert" && (e.op as { text: string }).text === "B")!;
 		doc1.egWalker.integrateRemote([doc2LastEvent]);
 
-		// "replicaA" sorts before "replicaB", so A should be before B
-		expect(doc1.getMap().getText("txt").toString()).toEqual("XAB");
-		expect(doc2.getMap().getText("txt").toString()).toEqual("XAB");
+		// "replicaB:0" has a smaller sequence number than "replicaA:1", so it orders first
+		expect(doc1.getMap().getText("txt").toString()).toEqual("XBA");
+		expect(doc2.getMap().getText("txt").toString()).toEqual("XBA");
 	});
 });
