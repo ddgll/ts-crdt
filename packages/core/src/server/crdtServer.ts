@@ -78,6 +78,8 @@ export class CrdtServer {
   private messageQueue: (() => Promise<void>)[] = [];
   private isProcessingQueue = false;
   private isCompacting = false;
+  private compactionPromise: Promise<void> | null = null;
+  private backgroundEventsBuffer: CrdtEvent[] | null = null;
 
   private async processQueue() {
     if (this.isProcessingQueue) return;
@@ -294,8 +296,14 @@ export class CrdtServer {
           }
           eventIds.add(event.replicaId);
 
-          // Persist the event first using repository
-          await this.repository.saveEvents([event]);
+          // Buffer or persist the event using repository
+          if (this.compactionPromise) {
+            if (this.backgroundEventsBuffer) {
+              this.backgroundEventsBuffer.push(event);
+            }
+          } else {
+            await this.repository.saveEvents([event]);
+          }
 
           // Eagerly integrate locally
           this.doc.egWalker.integrateRemote([event]);
@@ -386,6 +394,9 @@ export class CrdtServer {
    * Resets the document state and clears the underlying repository.
    */
   async reset(): Promise<void> {
+    if (this.compactionPromise) {
+      await this.compactionPromise;
+    }
     this.doc = new Doc();
     this.sockets.clear();
     this.socketReplicaIds.clear();
@@ -415,48 +426,70 @@ export class CrdtServer {
     this.isCompacting = true;
     try {
       const version = this.doc.egWalker.graph.getLastCriticalVersion();
-      if (version.length === 0) return; // Cannot compact without a critical version
-
-    // Rebuild the state exactly at the critical version to create the snapshot
-    const tempDoc = new Doc();
-    const eventsToApply = this.doc.egWalker.graph.topologicalSort(
-      this.doc.egWalker.graph.getEvents(version)
-    );
-    tempDoc.egWalker.integrateRemote(eventsToApply);
-    const snapshotState = tempDoc.toJSON();
-
-    const { snapshotEvent, remainingEvents } = this.doc.egWalker.graph.compact(
-      version,
-      snapshotState,
-      `server-${this.roomId}`,
-      Date.now()
-    );
-
-    // Replace the internal graph
-    const newDoc = new Doc(this.doc.egWalker.getReplicaId());
-    newDoc.egWalker.integrateRemote([snapshotEvent, ...remainingEvents]);
-    
-    // Copy over awareness states
-    for (const [key, val] of this.doc.egWalker.awarenessStates.entries()) {
-      newDoc.egWalker.awarenessStates.set(key, val);
-    }
-    this.doc = newDoc;
-
-    if (this.repository.clearEvents) {
-      await this.repository.clearEvents();
-      await this.repository.saveEvents([snapshotEvent, ...remainingEvents]);
-    }
-
-    // Send snapshot to all clients so they reset their state
-    const snapshotMsg: ServerMessage = { type: "snapshot", data: this.doc.egWalker.getStateSnapshot() };
-    const snapshotMsgString = JSON.stringify(snapshotMsg);
-    for (const client of this.sockets) {
-      if (client.readyState === 1) {
-        client.send(snapshotMsgString);
+      if (version.length === 0) {
+        this.isCompacting = false;
+        return; // Cannot compact without a critical version
       }
-    }
-    } finally {
+
+      // Rebuild the state exactly at the critical version to create the snapshot
+      const tempDoc = new Doc();
+      const eventsToApply = this.doc.egWalker.graph.topologicalSort(
+        this.doc.egWalker.graph.getEvents(version)
+      );
+      tempDoc.egWalker.integrateRemote(eventsToApply);
+      const snapshotState = tempDoc.toJSON();
+
+      const { snapshotEvent, remainingEvents } = this.doc.egWalker.graph.compact(
+        version,
+        snapshotState,
+        `server-${this.roomId}`,
+        Date.now()
+      );
+
+      // Replace the internal graph
+      const newDoc = new Doc(this.doc.egWalker.getReplicaId());
+      newDoc.egWalker.integrateRemote([snapshotEvent, ...remainingEvents]);
+      
+      // Copy over awareness states
+      for (const [key, val] of this.doc.egWalker.awarenessStates.entries()) {
+        newDoc.egWalker.awarenessStates.set(key, val);
+      }
+      this.doc = newDoc;
+
+      if (this.repository.clearEvents) {
+        this.backgroundEventsBuffer = [];
+        this.compactionPromise = (async () => {
+          try {
+            await this.repository.clearEvents!();
+            await this.repository.saveEvents([snapshotEvent, ...remainingEvents]);
+            
+            // Save buffered events that arrived during compaction
+            if (this.backgroundEventsBuffer && this.backgroundEventsBuffer.length > 0) {
+              await this.repository.saveEvents(this.backgroundEventsBuffer);
+            }
+          } catch (err) {
+            console.error("Error during background compaction DB I/O:", err);
+          } finally {
+            this.backgroundEventsBuffer = null;
+            this.compactionPromise = null;
+            this.isCompacting = false;
+          }
+        })();
+      } else {
+        this.isCompacting = false;
+      }
+
+      // Send snapshot to all clients so they reset their state
+      const snapshotMsg: ServerMessage = { type: "snapshot", data: this.doc.egWalker.getStateSnapshot() };
+      const snapshotMsgString = JSON.stringify(snapshotMsg);
+      for (const client of this.sockets) {
+        if (client.readyState === 1) {
+          client.send(snapshotMsgString);
+        }
+      }
+    } catch (err) {
       this.isCompacting = false;
+      throw err;
     }
   }
 

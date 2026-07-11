@@ -109,4 +109,93 @@ describe("Event Graph Compaction", () => {
     // If it ran 3 times concurrently, saveCount would be 4.
     expect(saveCount).toBe(2);
   });
+
+  it("should not block incoming events during a slow database compaction", async () => {
+    let savedEvents: CrdtEvent[] = [];
+    let isCompactingDb = false;
+    
+    const mockRepo: Repository = {
+      getEvents: async () => savedEvents,
+      saveEvents: async (events) => {
+        savedEvents.push(...events);
+      },
+      clearEvents: async () => {
+        isCompactingDb = true;
+        savedEvents = [];
+        // Simulate a slow database clear
+        await new Promise(resolve => setTimeout(resolve, 50));
+        isCompactingDb = false;
+      }
+    };
+
+    const server = new CrdtServer("test-room-3", mockRepo, { compactionThreshold: 5 });
+    await server.initialize();
+    
+    const doc = new Doc("client-3");
+    doc.egWalker.integrateRemote(
+      server.getDoc().egWalker.graph.topologicalSort(
+        server.getDoc().egWalker.graph.getEvents(server.getDoc().egWalker.getVersion())
+      )
+    );
+    
+    const map = doc.getMap();
+    map.set("key1", "val1");
+    map.set("key2", "val2");
+    map.set("key3", "val3");
+    map.set("key4", "val4");
+    map.set("key5", "val5"); // The 5th event that will trigger compaction
+    
+    const eventsToIntegrate = doc.egWalker.graph.topologicalSort(
+      doc.egWalker.graph.getEvents(doc.egWalker.getVersion())
+    );
+    
+    let messageCallback: (data: string) => void = () => {};
+    const mockSocket: any = {
+      readyState: 1,
+      send: (msgString: string) => {
+        const msg = JSON.parse(msgString);
+        if (msg.type === "snapshot") {
+          doc.egWalker.loadStateSnapshot(msg.data);
+        }
+      },
+      on: (event: string, cb: any) => {
+        if (event === "message") messageCallback = cb;
+      },
+    };
+    
+    await server.handleConnection(mockSocket);
+    
+    // Send 5 events to trigger compaction
+    for (let i = 0; i < 5; i++) {
+      const e = eventsToIntegrate.find(e => e.op.type === "map-set" && e.op.key === `key${i+1}`);
+      if (e) {
+        messageCallback(JSON.stringify({ type: "event", data: e }));
+      }
+    }
+    
+    // At this point, the server starts compacting in the background, but the queue is still processing.
+    // Wait a tiny bit for the queue to start compaction
+    await new Promise(resolve => setTimeout(resolve, 15));
+    
+    expect(isCompactingDb).toBe(true); // Compaction is ongoing
+    
+    // Now send a 6th event
+    map.set("key6", "val6");
+    const e6 = doc.egWalker.graph.getEvents(doc.egWalker.getVersion()).find(e => e.op.type === "map-set" && e.op.key === "key6")!;
+    
+    messageCallback(JSON.stringify({ type: "event", data: e6 }));
+    
+    // Wait a tiny bit for the queue to process it
+    await new Promise(resolve => setTimeout(resolve, 5));
+    
+    // The server's in-memory state should have it, even though DB compaction is still ongoing
+    expect(server.getDoc().getMap().get("key6")).toBe("val6");
+    
+    // Wait for DB compaction to finish
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // DB should have 2 events: the snapshot, and key6
+    expect(isCompactingDb).toBe(false);
+    expect(savedEvents.length).toBe(2);
+  });
 });
