@@ -1,7 +1,6 @@
 import {
 	ARRAY_DELETE_OP,
 	ARRAY_INSERT_OP,
-	ARRAY_REPLACE_OP,
 	CrdtEvent,
 	EventGraph,
 	EventID,
@@ -273,8 +272,7 @@ export class EgWalker {
 					if (i === op.path.length - 1) {
 						if (
 							op.type === ARRAY_INSERT_OP ||
-							op.type === ARRAY_DELETE_OP ||
-							op.type === ARRAY_REPLACE_OP
+							op.type === ARRAY_DELETE_OP
 						) {
 							next = new YArray(this.doc, newPath);
 						} else if (
@@ -352,17 +350,7 @@ export class EgWalker {
 					);
 				}
 				break;
-			case ARRAY_REPLACE_OP:
-				if (target instanceof YArray) {
-					undoActions.push(target._applyReplace(event.id, op.values));
-				} else {
-					throw new EgWalkerError(
-						`Target for array-replace is not a YArray, but a ${target.constructor.name} at path ${
-							op.path.join("/")
-						}`,
-					);
-				}
-				break;
+
 			case TEXT_INSERT_OP:
 				if (target instanceof YText) {
 					undoActions.push(target._applyInsert(event.id, op.afterId, op.text));

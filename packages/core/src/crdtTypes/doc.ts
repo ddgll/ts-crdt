@@ -46,6 +46,13 @@ export class Doc {
 	}
 
 	/**
+	 * Performs garbage collection on the document to clean up tombstones and free memory.
+	 */
+	gc() {
+		this._root.gc();
+	}
+
+	/**
 	 * Applies a generic update to the document.
 	 * This method is a low-level way to apply operations and is typically used for specific update formats.
 	 * @param update The update object to apply.

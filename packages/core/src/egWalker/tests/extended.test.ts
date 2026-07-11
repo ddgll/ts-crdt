@@ -6,7 +6,6 @@ import { EgWalkerError } from "../egWalker.js";
 import {
   ARRAY_DELETE_OP,
   ARRAY_INSERT_OP,
-  ARRAY_REPLACE_OP,
   MAP_SET_OP,
   Op,
 } from "../../eventGraph/eventGraph.js";
@@ -52,18 +51,7 @@ describe("EgWalker extended coverage", () => {
     );
   });
 
-  it("should throw when applying array-replace to a YMap", () => {
-    const doc = new Doc();
-    const walker = doc.egWalker;
 
-    const op = { type: ARRAY_REPLACE_OP, path: [], values: ["a"] };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(() => walker.localOp(op as any)).toThrow(
-      new EgWalkerError(
-        "Target for array-replace is not a YArray, but a YMap at path "
-      )
-    );
-  });
 
   it("should throw when path is invalid", () => {
     const doc = new Doc();

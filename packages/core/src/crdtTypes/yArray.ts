@@ -1,9 +1,9 @@
 import type { Doc } from "./doc.js";
 import { YMap } from "./yMap.js";
+import { YText } from "./yText.js";
 import {
 	ARRAY_DELETE_OP,
 	ARRAY_INSERT_OP,
-	ARRAY_REPLACE_OP,
 	compareEventIds,
 } from "../eventGraph/eventGraph.js";
 
@@ -108,15 +108,12 @@ export class YArray {
 
 	/**
 	 * Replaces the entire content of the array with new values.
-	 * This is an atomic operation that generates a single ARRAY_REPLACE_OP event.
+	 * This is a macro that issues discrete ARRAY_DELETE_OP and ARRAY_INSERT_OP commands.
 	 * @param values The new elements for the array.
 	 */
 	replace(values: unknown[]) {
-		this._doc.egWalker.localOp({
-			type: ARRAY_REPLACE_OP,
-			path: this._path,
-			values,
-		});
+		this.delete(0, this.length);
+		this.insert(0, values);
 	}
 
 	/**
@@ -205,52 +202,22 @@ export class YArray {
 		};
 	}
 
+
+
 	/**
-	 * Applies a replace operation to the array's internal state.
-	 * @param eventId The ID of the replace event.
-	 * @param values The new values for the array.
-	 * @returns An undo closure.
-	 * @internal
+	 * Performs garbage collection by cleanly splicing out elements marked as deleted.
 	 */
-	_applyReplace(eventId: string, values: unknown[]): () => void {
-		const toggledIds: string[] = [];
-		// Mark everything as deleted
-		for (const item of this._data) {
-			if (!item.isDeleted) {
-				item.isDeleted = true;
-				toggledIds.push(item.id);
-			}
-		}
-		this._activeCount = values.length;
-		// Insert new values at the end (or anywhere, since everything else is deleted)
-		const newItems: YArrayItem[] = values.map((val, i) => ({
-			id: `${eventId}:${i}`,
-			value: val,
-			isDeleted: false
-		}));
-		const insertIdx = this._data.length;
-		this._data.push(...newItems);
-		
-		for (let i = insertIdx; i < this._data.length; i++) {
+	gc() {
+		this._data = this._data.filter(item => !item.isDeleted);
+		this._idIndex.clear();
+		for (let i = 0; i < this._data.length; i++) {
 			this._idIndex.set(this._data[i].id, i);
+			const value = this._data[i].value;
+			if (value instanceof YMap || value instanceof YArray || value instanceof YText) {
+				value.gc();
+			}
 		}
-
-		const newIds = newItems.map(i => i.id);
-		return () => {
-			this._data = this._data.filter(item => !newIds.includes(item.id));
-			this._idIndex.clear();
-			for (let i = 0; i < this._data.length; i++) {
-				this._idIndex.set(this._data[i].id, i);
-			}
-
-			for (const id of toggledIds) {
-				const idx = this._idIndex.get(id);
-				if (idx !== undefined) {
-					this._data[idx].isDeleted = false;
-				}
-			}
-			this._activeCount = toggledIds.length;
-		};
+		this._activeCount = this._data.length;
 	}
 
 	/**

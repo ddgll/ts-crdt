@@ -326,6 +326,17 @@ export class YText {
 	}
 
 	/**
+	 * Performs garbage collection by cleanly splicing out characters marked as deleted.
+	 */
+	gc() {
+		this._data = this._data.filter(item => !item.isDeleted);
+		this._idIndex.clear();
+		for (let i = 0; i < this._data.length; i++) {
+			this._idIndex.set(this._data[i].id, i);
+		}
+	}
+
+	/**
 	 * Creates a YText instance from a plain string.
 	 * @param doc The parent document.
 	 * @param path The path of the text within the document.

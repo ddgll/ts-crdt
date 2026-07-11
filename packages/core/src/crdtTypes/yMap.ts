@@ -205,26 +205,13 @@ export class YMap {
 	}
 
 	/**
-	 * Merges another YMap into this one.
-	 * This is a shallow merge. For nested maps, it recursively merges.
-	 * For other types, it overwrites the value.
-	 * @param other The other YMap to merge.
+	 * Performs garbage collection by recursively calling gc() on nested CRDT collections.
 	 */
-	merge(other: YMap) {
-		for (const [key, wrapper] of other._map.entries()) {
+	gc() {
+		for (const wrapper of this._map.values()) {
 			const value = wrapper.value;
-			const existingWrapper = this._map.get(key);
-			const existingValue = existingWrapper?.value;
-			if (existingValue instanceof YMap && value instanceof YMap) {
-				existingValue.merge(value);
-			} else if (value instanceof YMap) {
-				this.set(key, YMap.fromJSON(this._doc, [...this._path, key], value.toJSON()));
-			} else if (value instanceof YArray) {
-				this.set(key, YArray.fromJSON(this._doc, [...this._path, key], value.toJSON()));
-			} else if (value instanceof YText) {
-				this.set(key, YText.fromString(this._doc, [...this._path, key], value.toString()));
-			} else {
-				this.set(key, value);
+			if (value instanceof YMap || value instanceof YArray || value instanceof YText) {
+				value.gc();
 			}
 		}
 	}

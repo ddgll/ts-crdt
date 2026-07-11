@@ -437,6 +437,7 @@ export class CrdtServer {
         this.doc.egWalker.graph.getEvents(version)
       );
       tempDoc.egWalker.integrateRemote(eventsToApply);
+      tempDoc.gc();
       const snapshotState = tempDoc.toJSON();
 
       const { snapshotEvent, remainingEvents } = this.doc.egWalker.graph.compact(

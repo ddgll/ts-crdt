@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   ARRAY_DELETE_OP,
   ARRAY_INSERT_OP,
-  ARRAY_REPLACE_OP,
   CrdtEvent,
   createEventGraph,
   EventGraphError,
@@ -71,15 +70,6 @@ describe("eventGraph", () => {
       };
       expect(isCrdtEvent(event)).toBe(true);
     });
-    it("should return true for a valid array replace op", () => {
-      const event: CrdtEvent = {
-        id: "1",
-        replicaId: "A",
-        parents: [],
-        op: { type: ARRAY_REPLACE_OP, path: [], values: [1] },
-      };
-      expect(isCrdtEvent(event)).toBe(true);
-    });
     it("should return false for invalid map set op", () => {
       const event = {
         id: "1",
@@ -95,15 +85,6 @@ describe("eventGraph", () => {
         replicaId: "A",
         parents: [],
         op: { type: ARRAY_INSERT_OP, afterId: null, values: "not-an-array" },
-      };
-      expect(isCrdtEvent(event)).toBe(false);
-    });
-    it("should return false for invalid array replace op (values)", () => {
-      const event = {
-        id: "1",
-        replicaId: "A",
-        parents: [],
-        op: { type: ARRAY_REPLACE_OP, values: "not-an-array" },
       };
       expect(isCrdtEvent(event)).toBe(false);
     });

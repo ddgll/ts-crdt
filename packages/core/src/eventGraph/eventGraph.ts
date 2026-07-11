@@ -11,8 +11,6 @@ export const MAP_DELETE_OP = "map-delete";
 export const ARRAY_INSERT_OP = "array-insert";
 /** Constant for array delete operations. */
 export const ARRAY_DELETE_OP = "array-delete";
-/** Constant for array replace operations. */
-export const ARRAY_REPLACE_OP = "array-replace";
 /** Constant for text insert operations. */
 export const TEXT_INSERT_OP = "text-insert";
 /** Constant for text format operations. */
@@ -62,16 +60,7 @@ export interface ArrayDeleteOperation {
 	targetIds: string[];
 }
 
-/** Represents an operation to replace the entire contents of an array. */
-export interface ArrayReplaceOperation {
-	type: typeof ARRAY_REPLACE_OP;
-	/** The path to the target array within the document. */
-	path: (string | number)[];
-	/** The new values for the array. */
-	values: unknown[];
-}
 
-/** Represents an operation to insert text into a YText object. */
 export interface TextInsertOperation {
 	type: typeof TEXT_INSERT_OP;
 	/** The path to the target text object within the document. */
@@ -109,13 +98,11 @@ export interface SnapshotOperation {
 	state: Record<string, unknown>;
 }
 
-/** A union of all possible operation types. */
 export type Op =
 	| MapSetOperation
 	| MapDeleteOperation
 	| ArrayInsertOperation
 	| ArrayDeleteOperation
-	| ArrayReplaceOperation
 	| TextInsertOperation
 	| TextFormatOperation
 	| TextDeleteOperation
@@ -206,14 +193,6 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 				return false;
 			}
 			break;
-		case ARRAY_REPLACE_OP:
-			if (!isValidPath((op as unknown as ArrayReplaceOperation).path)) return false;
-			if (
-				!Array.isArray((op as unknown as ArrayReplaceOperation).values)
-			) {
-				return false;
-			}
-			break;
 		case TEXT_INSERT_OP:
 			if (!isValidPath((op as unknown as TextInsertOperation).path)) return false;
 			if (
@@ -281,7 +260,7 @@ export function compareEventIds(id1: string, id2: string): number {
 
 const VALID_OP_TYPES = new Set([
 	MAP_SET_OP, MAP_DELETE_OP, ARRAY_INSERT_OP, ARRAY_DELETE_OP,
-	ARRAY_REPLACE_OP, TEXT_INSERT_OP, TEXT_FORMAT_OP, TEXT_DELETE_OP,
+	TEXT_INSERT_OP, TEXT_FORMAT_OP, TEXT_DELETE_OP,
 	SNAPSHOT_OP,
 ]);
 
