@@ -1,4 +1,5 @@
 import { ServerMessage } from "../index.js";
+import { getLogger } from "../logger.js";
 import { PubSubAdapter } from "./pubSubAdapter.js";
 
 /**
@@ -27,7 +28,7 @@ export class NodeRedisPubSubAdapter implements PubSubAdapter {
       try {
         onMessage(JSON.parse(message));
       } catch (err) {
-        console.error("Failed to parse Redis event from channel:", channel, err);
+        getLogger().error("Failed to parse Redis event from channel:", channel, err);
       }
     };
 
@@ -70,7 +71,7 @@ export class IoRedisPubSubAdapter implements PubSubAdapter {
         try {
           onMessage(JSON.parse(msg));
         } catch (err) {
-          console.error("Failed to parse Redis event from channel:", chan, err);
+          getLogger().error("Failed to parse Redis event from channel:", chan, err);
         }
       }
     };

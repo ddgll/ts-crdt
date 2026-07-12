@@ -143,11 +143,19 @@ export class YArray {
 		}
 		this._activeCount += values.length;
 
+		// Undo splices out the exact [insertIdx, count] span rather than
+		// filtering by an id membership test (O(n*m) + full index rebuild). This
+		// is safe because undo closures are always invoked in strict LIFO order
+		// (see EgWalker._ingestEvents), so at undo time the inserted run is still
+		// contiguous at insertIdx. Only the shifted suffix is re-indexed.
 		const insertedIds = newItems.map(item => item.id);
+		const count = newItems.length;
 		return () => {
-			this._data = this._data.filter(item => !insertedIds.includes(item.id));
-			this._idIndex.clear();
-			for (let i = 0; i < this._data.length; i++) {
+			this._data.splice(insertIdx, count);
+			for (const id of insertedIds) {
+				this._idIndex.delete(id);
+			}
+			for (let i = insertIdx; i < this._data.length; i++) {
 				this._idIndex.set(this._data[i].id, i);
 			}
 			this._activeCount -= values.length;
@@ -300,6 +308,12 @@ export class YArray {
 
 	/**
 	 * Creates a YArray instance from a JSON object.
+	 *
+	 * **LOSSY / NON-COLLABORATIVE:** items receive synthetic, path-derived ids
+	 * (`snapshot:<path>:<index>`) and tombstones are dropped. These ids are not
+	 * globally unique across replicas, so a JSON-loaded array cannot be safely
+	 * used in a collaborative sync flow — use {@link YArray.fromSnapshot} (which
+	 * preserves real RGA ids and tombstones) for that. See {@link Doc.fromJSON}.
 	 * @param doc The parent document.
 	 * @param path The path of the array within the document.
 	 * @param json The JSON object to deserialize.

@@ -1,4 +1,5 @@
 import { Doc, ServerMessage, YArray, YText, YMap } from "./index.js";
+import { Logger, getLogger } from "./logger.js";
 
 /**
  * Minimal WebSocket interface required by CrdtClient.
@@ -25,9 +26,11 @@ export class CrdtClient {
   private unsubscribeDocListener: (() => void) | null = null;
   private handleMessageRef: ((msgEvent: { data: unknown }) => void) | null = null;
   private messageListeners = new Set<(type: "snapshot" | "event" | "awareness", data: unknown) => void>();
+  private logger: Logger;
 
-  constructor(doc: Doc) {
+  constructor(doc: Doc, logger: Logger = getLogger()) {
     this.doc = doc;
+    this.logger = logger;
   }
 
   /**
@@ -74,7 +77,7 @@ export class CrdtClient {
           this.notifyListeners("awareness", parsed.data);
         }
       } catch (err) {
-        console.error("[CrdtClient] Error processing message:", err);
+        this.logger.error("[CrdtClient] Error processing message:", err);
       } finally {
         this.isApplyingRemote = false;
       }
@@ -127,7 +130,7 @@ export class CrdtClient {
       try {
         listener(type, data);
       } catch (err) {
-        console.error("[CrdtClient] Listener error:", err);
+        this.logger.error("[CrdtClient] Listener error:", err);
       }
     }
   }

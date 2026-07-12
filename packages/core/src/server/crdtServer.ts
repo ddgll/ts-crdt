@@ -1,4 +1,5 @@
 import { CrdtEvent, Doc, ServerMessage, isCrdtEvent } from "../index.js";
+import { Logger, getLogger } from "../logger.js";
 import { PubSubAdapter } from "./pubSubAdapter.js";
 
 /**
@@ -56,6 +57,15 @@ export interface CrdtServerOptions {
   maxEventsPerSecond?: number;
   /** Time in milliseconds to wait before removing an idle server from the global map. Default: 30,000 */
   idleTimeoutMs?: number;
+  /** Optional logger for diagnostics. Defaults to the process-wide logger (see {@link setLogger}). */
+  logger?: Logger;
+  /**
+   * Optional hook invoked when the server catches an error it would otherwise
+   * only log — e.g. a failed queued task or a message that could not be
+   * processed. Lets callers surface a metric/alert for dropped events instead of
+   * only seeing console noise. Errors thrown by the hook itself are ignored.
+   */
+  onError?: (context: string, error: unknown) => void;
 }
 
 /**
@@ -81,6 +91,23 @@ export class CrdtServer {
   private compactionPromise: Promise<void> | null = null;
   private backgroundEventsBuffer: CrdtEvent[] | null = null;
   private serverSequenceNumber: number = 0;
+  private logger: Logger;
+
+  /**
+   * Reports an error through the configured `onError` hook (if any) and the
+   * logger. Used for errors the server recovers from but that a caller may want
+   * to observe (e.g. to count dropped events).
+   */
+  private reportError(context: string, error: unknown) {
+    if (this.options?.onError) {
+      try {
+        this.options.onError(context, error);
+      } catch {
+        // A faulty error hook must not mask the original error.
+      }
+    }
+    this.logger.error(`${context}:`, error);
+  }
 
   private async processQueue() {
     if (this.isProcessingQueue) return;
@@ -92,7 +119,7 @@ export class CrdtServer {
           try {
             await task();
           } catch (err) {
-            console.error("Error processing queued task:", err);
+            this.reportError("Error processing queued task", err);
           }
         }
       }
@@ -102,7 +129,8 @@ export class CrdtServer {
   }
 
   constructor(roomId: string, repository: Repository, options?: CrdtServerOptions) {
-    this.doc = new Doc();
+    this.logger = options?.logger ?? getLogger();
+    this.doc = new Doc(undefined, this.logger);
     this.roomId = roomId;
     this.repository = repository;
     this.pubSub = options?.pubSub;
@@ -122,7 +150,7 @@ export class CrdtServer {
       this.doc.clear(); // Reset document to avoid double-application on re-init
       const events = await this.repository.getEvents();
       if (events.length > 0) {
-        console.log(`Loading ${events.length} events from the repository.`);
+        this.logger.info(`Loading ${events.length} events from the repository.`);
         this.doc.egWalker.integrateRemote(events);
         
         // Initialize serverSequenceNumber based on existing server events
@@ -138,7 +166,7 @@ export class CrdtServer {
           }
         }
       } else {
-        console.log("No existing events. Initializing new document.");
+        this.logger.info("No existing events. Initializing new document.");
         this.doc.getMap().getArray("content").insert(0, []);
         // Persist all seed events explicitly rather than only the last graph
         // event, so the repository holds a complete, replayable history.
@@ -188,7 +216,7 @@ export class CrdtServer {
               }
             }
           });
-          this.processQueue().catch(console.error);
+          this.processQueue().catch((err) => this.logger.error(err));
         });
       }
 
@@ -221,7 +249,7 @@ export class CrdtServer {
       const messageString = typeof data === "string" ? data : String(data);
       
       if (messageString.length > maxSize) {
-        console.warn(`Rejected oversized message: ${messageString.length} bytes`);
+        this.logger.warn(`Rejected oversized message: ${messageString.length} bytes`);
         violations++;
         if (violations > 5) socket.close?.();
         return;
@@ -233,7 +261,7 @@ export class CrdtServer {
         eventTimestamps.shift();
       }
       if (eventTimestamps.length > maxRate) {
-        console.warn(`Rate limit exceeded for socket, dropping event`);
+        this.logger.warn(`Rate limit exceeded for socket, dropping event`);
         violations++;
         if (violations > 5) socket.close?.();
         return;
@@ -281,7 +309,7 @@ export class CrdtServer {
 
           // Validate the event structure to prevent injection of arbitrary data
           if (!isCrdtEvent(event)) {
-            console.warn("Rejected invalid event from client:", event);
+            this.logger.warn("Rejected invalid event from client:", event);
             return;
           }
 
@@ -289,19 +317,19 @@ export class CrdtServer {
           if (event.op.type === "array-insert") {
             const maxArraySize = this.options?.maxArrayInsertSize ?? 10_000;
             if (event.op.values.length > maxArraySize) {
-              console.warn(`Rejected array-insert with ${event.op.values.length} values`);
+              this.logger.warn(`Rejected array-insert with ${event.op.values.length} values`);
               return;
             }
           } else if (event.op.type === "text-insert") {
             const maxTextSize = this.options?.maxTextInsertSize ?? 100_000;
             if (event.op.text.length > maxTextSize) {
-              console.warn(`Rejected text-insert with ${event.op.text.length} chars`);
+              this.logger.warn(`Rejected text-insert with ${event.op.text.length} chars`);
               return;
             }
           } else if (event.op.type === "map-set") {
             const maxValueSize = this.options?.maxValueSize ?? 102_400; // 100KB
             if (JSON.stringify(event.op.value).length > maxValueSize) {
-              console.warn(`Rejected map-set with value size exceeding limit`);
+              this.logger.warn(`Rejected map-set with value size exceeding limit`);
               return;
             }
           }
@@ -353,10 +381,10 @@ export class CrdtServer {
             }
           }
         } catch (err) {
-          console.error("Error processing message:", err);
+          this.reportError("Error processing message", err);
         }
       });
-      this.processQueue().catch(console.error);
+      this.processQueue().catch((err) => this.logger.error(err));
     });
 
     const cleanup = async () => {
@@ -367,7 +395,7 @@ export class CrdtServer {
           const offlineMsg: ServerMessage = { type: "awareness", data: { replicaId, state: null } };
           const offlineMsgStr = JSON.stringify(offlineMsg);
           if (this.pubSub) {
-            await this.pubSub.publish(this.roomId, offlineMsg).catch(console.error);
+            await this.pubSub.publish(this.roomId, offlineMsg).catch((err) => this.logger.error(err));
           } else {
             for (const client of this.sockets) {
               if (client.readyState === 1 && client !== socket) {
@@ -385,7 +413,7 @@ export class CrdtServer {
           try {
             await this.repository.flush();
           } catch (err) {
-            console.error("Failed to flush repository on connection cleanup:", err);
+            this.reportError("Failed to flush repository on connection cleanup", err);
           }
         }
 
@@ -408,7 +436,7 @@ export class CrdtServer {
 
     socket.on("close", cleanup);
     socket.on("error", (err: unknown) => {
-      console.error("WebSocket connection error:", err);
+      this.reportError("WebSocket connection error", err);
       cleanup();
     });
   }
@@ -420,7 +448,7 @@ export class CrdtServer {
     if (this.compactionPromise) {
       await this.compactionPromise;
     }
-    this.doc = new Doc();
+    this.doc = new Doc(undefined, this.logger);
     this.sockets.clear();
     this.socketReplicaIds.clear();
 
@@ -464,7 +492,7 @@ export class CrdtServer {
       }
 
       // Rebuild the state exactly at the critical version to create the snapshot
-      const tempDoc = new Doc();
+      const tempDoc = new Doc(undefined, this.logger);
       const eventsToApply = this.doc.egWalker.graph.topologicalSort(
         this.doc.egWalker.graph.getEvents(version)
       );
@@ -482,7 +510,7 @@ export class CrdtServer {
       );
 
       // Replace the internal graph
-      const newDoc = new Doc(this.doc.egWalker.getReplicaId());
+      const newDoc = new Doc(this.doc.egWalker.getReplicaId(), this.logger);
       newDoc.egWalker.integrateRemote([snapshotEvent, ...remainingEvents]);
       
       // Copy over awareness states
@@ -505,7 +533,7 @@ export class CrdtServer {
               await this.repository.saveEvents(bufferToSave);
             }
           } catch (err) {
-            console.error("Error during background compaction DB I/O:", err);
+            this.reportError("Error during background compaction DB I/O", err);
           } finally {
             this.backgroundEventsBuffer = null;
             this.compactionPromise = null;

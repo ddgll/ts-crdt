@@ -296,9 +296,26 @@ export class EventGraph {
 
 	/**
 	 * Gets the incrementally maintained sorted events list.
+	 *
+	 * WARNING: this returns the graph's **internal** array by reference for
+	 * performance (it is mutated in place by {@link addEvent}). Callers that need
+	 * a stable snapshot across subsequent `addEvent` calls MUST copy it
+	 * (`[...graph.getSortedEvents()]`); holding the reference and reading it later
+	 * will observe in-place mutation. Use {@link getSortedEventsCopy} for a safe,
+	 * owned copy.
 	 */
 	getSortedEvents(): CrdtEvent[] {
 		return this.sortedEvents;
+	}
+
+	/**
+	 * Returns a defensive shallow copy of the sorted events list that is safe to
+	 * retain across future {@link addEvent} calls. Prefer this over
+	 * {@link getSortedEvents} unless the borrowed-reference performance of the
+	 * latter is specifically needed.
+	 */
+	getSortedEventsCopy(): CrdtEvent[] {
+		return [...this.sortedEvents];
 	}
 
 	/**
@@ -433,88 +450,56 @@ export class EventGraph {
 			return currentVersionIds;
 		}
 
+		// A critical version is a single event `c` that is a global articulation
+		// point of the DAG: every event before `c` in causal order is an ancestor
+		// of `c`, and every event after is a descendant. In a topological order
+		// that is exactly: the prefix ending at `c` has `c` as its sole head
+		// (`soleHead`) AND the suffix starting at `c` has `c` as its sole tail
+		// (`soleTail`, i.e. sole head in the reversed graph).
+		//
+		// Both conditions are computed in two linear frontier passes instead of
+		// the previous per-candidate ancestor/descendant BFS (which was O(n^2) —
+		// see PLAN_05). The last critical version is the qualifying event with the
+		// greatest topological index.
 		const allEvents = this.topologicalSort(this.getAllEvents());
 		const n = allEvents.length;
-		const eventIndex = new Map<EventID, number>();
-		allEvents.forEach((e, i) => eventIndex.set(e.id, i));
+		if (n === 0) return [];
 
-		let commonAncestors = new Set<EventID>();
-		let first = true;
-		for (const headId of currentVersionIds) {
-			const ancestors = new Set<EventID>();
-			const stack = [headId];
-			ancestors.add(headId);
-			while (stack.length > 0) {
-				const curr = stack.pop()!;
-				const ev = this.getEvent(curr);
-				if (ev) {
-					for (const p of ev.parents) {
-						if (!ancestors.has(p)) {
-							ancestors.add(p);
-							stack.push(p);
-						}
-					}
+		// Forward pass: does the prefix [0..i] reduce to the single head allEvents[i]?
+		const soleHead = new Array<boolean>(n);
+		{
+			const frontier = new Set<EventID>();
+			for (let i = 0; i < n; i++) {
+				const ev = allEvents[i];
+				for (const p of ev.parents) {
+					frontier.delete(p);
 				}
-			}
-			if (first) {
-				commonAncestors = ancestors;
-				first = false;
-			} else {
-				const intersection = new Set<EventID>();
-				for (const a of commonAncestors) {
-					if (ancestors.has(a)) intersection.add(a);
-				}
-				commonAncestors = intersection;
+				frontier.add(ev.id);
+				soleHead[i] = frontier.size === 1;
 			}
 		}
 
-		const candidateIds = Array.from(commonAncestors).sort(
-			(a, b) => eventIndex.get(b)! - eventIndex.get(a)!
-		);
-
-		for (const candidateId of candidateIds) {
-			const i = eventIndex.get(candidateId)!;
-
-			let ancestorCount = 0;
-			const visitedA = new Set<EventID>();
-			const stackA = [candidateId];
-			visitedA.add(candidateId);
-			while (stackA.length > 0) {
-				const curr = stackA.pop()!;
-				const ev = this.getEvent(curr);
-				if (ev) {
-					for (const p of ev.parents) {
-						if (!visitedA.has(p)) {
-							visitedA.add(p);
-							stackA.push(p);
-							ancestorCount++;
-						}
-					}
-				}
-			}
-
-			if (ancestorCount !== i) continue;
-
-			let descendantCount = 0;
-			const visitedD = new Set<EventID>();
-			const stackD = [candidateId];
-			visitedD.add(candidateId);
-			while (stackD.length > 0) {
-				const curr = stackD.pop()!;
-				const kids = this.children.get(curr);
+		// Backward pass: does the suffix [i..n-1] reduce to the single tail
+		// allEvents[i] when edges are followed child->parent?
+		const soleTail = new Array<boolean>(n);
+		{
+			const frontier = new Set<EventID>();
+			for (let i = n - 1; i >= 0; i--) {
+				const ev = allEvents[i];
+				const kids = this.children.get(ev.id);
 				if (kids) {
 					for (const k of kids) {
-						if (!visitedD.has(k)) {
-							visitedD.add(k);
-							stackD.push(k);
-							descendantCount++;
-						}
+						frontier.delete(k);
 					}
 				}
+				frontier.add(ev.id);
+				soleTail[i] = frontier.size === 1;
 			}
+		}
 
-			if (descendantCount === n - 1 - i) {
-				return [candidateId];
+		for (let i = n - 1; i >= 0; i--) {
+			if (soleHead[i] && soleTail[i]) {
+				return [allEvents[i].id];
 			}
 		}
 

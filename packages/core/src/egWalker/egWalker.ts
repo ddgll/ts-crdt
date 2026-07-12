@@ -17,6 +17,30 @@ import { Doc } from "../crdtTypes/doc.js";
 import { YMap } from "../crdtTypes/yMap.js";
 import { YArray } from "../crdtTypes/yArray.js";
 import { YText } from "../crdtTypes/yText.js";
+import { Logger, getLogger } from "../logger.js";
+
+/**
+ * Generates a strong, collision-resistant default replica id.
+ *
+ * Prefers `crypto.randomUUID()` (cryptographically strong, 122 random bits) so
+ * two replicas practically never share an id namespace — a collision would let
+ * them mint duplicate event ids, which `EventGraph.addEvent` silently drops,
+ * causing divergence. Falls back to a `Math.random`-based id only where the Web
+ * Crypto API is unavailable. The result never contains ':' so it is safe as the
+ * `replicaId` half of a `replicaId:sequence` event id.
+ */
+export function generateReplicaId(): string {
+	const cryptoObj: Crypto | undefined =
+		typeof globalThis !== "undefined" ? globalThis.crypto : undefined;
+	if (cryptoObj && typeof cryptoObj.randomUUID === "function") {
+		return cryptoObj.randomUUID();
+	}
+	// Fallback: combine two Math.random draws for a longer, lower-collision id.
+	return (
+		Math.random().toString(36).substring(2, 15) +
+		Math.random().toString(36).substring(2, 15)
+	);
+}
 
 /**
  * Represents a snapshot of the document's state, including the data, event graph, and replica information.
@@ -73,6 +97,8 @@ export class EgWalker {
 	 * never calls `addEvent` with a missing parent (which would throw).
 	 */
 	private pendingEvents = new Map<EventID, CrdtEvent>();
+	/** Logger used for diagnostics; defaults to the process-wide logger. */
+	private logger: Logger;
 
 	/**
 	 * Registers a callback to be notified when a new event is applied (either locally or integrated from a remote replica).
@@ -94,7 +120,7 @@ export class EgWalker {
 			try {
 				listener(event, isLocal);
 			} catch (err) {
-				console.error("[EgWalker] Event listener error:", err);
+				this.logger.error("[EgWalker] Event listener error:", err);
 			}
 		}
 	}
@@ -117,7 +143,7 @@ export class EgWalker {
 			try {
 				listener(event);
 			} catch (err) {
-				console.error("[EgWalker] beforeLocalApply listener error:", err);
+				this.logger.error("[EgWalker] beforeLocalApply listener error:", err);
 			}
 		}
 	}
@@ -136,14 +162,14 @@ export class EgWalker {
 	 * @param replicaId An optional unique identifier for this replica.
 	 * @param graph An optional existing event graph to use.
 	 */
-	constructor(doc: Doc, replicaId?: string, graph = new EventGraph()) {
+	constructor(doc: Doc, replicaId?: string, graph = new EventGraph(), logger: Logger = getLogger()) {
 		if (replicaId && replicaId.includes(':')) {
 			throw new EgWalkerError("replicaId must not contain ':'");
 		}
 		this.graph = graph;
 		this.doc = doc;
-		this.replicaId = replicaId ||
-			Math.random().toString(36).substring(2, 15);
+		this.logger = logger;
+		this.replicaId = replicaId || generateReplicaId();
 		this.cachedSortedEvents = this.graph.getSortedEvents();
 		this.isAtHead = true;
 	}
@@ -258,7 +284,7 @@ export class EgWalker {
 						// Structurally invalid event (bad op type, self-parent, ...).
 						// Drop it so a single bad event can neither abort the batch nor be
 						// retried forever, leaving the graph half-applied.
-						console.error("[EgWalker] Dropping un-integrable event:", event.id, err);
+						this.logger.error("[EgWalker] Dropping un-integrable event:", event.id, err);
 						this.pendingEvents.delete(event.id);
 						continue;
 					}

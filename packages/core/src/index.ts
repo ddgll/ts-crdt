@@ -6,3 +6,4 @@ export * from './egWalker/egWalker.js';
 export * from './egWalker/UndoManager.js';
 export * from './eventGraph/eventGraph.js';
 export * from './sync.js';
+export * from './logger.js';

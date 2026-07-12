@@ -11,8 +11,14 @@ export type ServerMessage =
 
 /**
  * Message sent from client to server.
+ *
+ * The bare `CrdtEvent` member is a **deprecated** legacy wire format retained for
+ * backward compatibility; new clients should always send the tagged
+ * `{ type: "event"; data }` form. The server still accepts the bare form (see
+ * `CrdtServer.handleConnection`) but it may be removed in a future major release.
  */
 export type ClientMessage =
   | { type: "event"; data: CrdtEvent }
   | { type: "awareness"; data: { replicaId: string; state: unknown } }
-  | CrdtEvent; // Legacy format
+  /** @deprecated Send `{ type: "event"; data }` instead. */
+  | CrdtEvent;

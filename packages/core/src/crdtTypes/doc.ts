@@ -3,6 +3,7 @@ import { EgWalker } from '../egWalker/egWalker.js';
 import {
 	MAP_SET_OP,
 } from '../eventGraph/eventGraph.js';
+import { Logger, getLogger } from '../logger.js';
 
 /**
  * A CRDT document that holds the state of the collaborative data.
@@ -14,13 +15,17 @@ export class Doc {
 	 * The EgWalker instance that manages the event graph and replication for this document.
 	 */
 	public egWalker: EgWalker;
+	/** Logger propagated to the EgWalker; retained so {@link clear} preserves it. */
+	private _logger: Logger;
 
 	/**
 	 * Creates a new Doc instance.
-	 * @param replicaId An optional unique identifier for this replica. If not provided, a random UUID will be generated.
+	 * @param replicaId An optional unique identifier for this replica. If not provided, a strong random id will be generated.
+	 * @param logger An optional logger for diagnostics. Defaults to the process-wide logger (see {@link setLogger}).
 	 */
-	constructor(replicaId?: string) {
-		this.egWalker = new EgWalker(this, replicaId);
+	constructor(replicaId?: string, logger: Logger = getLogger()) {
+		this._logger = logger;
+		this.egWalker = new EgWalker(this, replicaId, undefined, logger);
 		this._root = new YMap(this, []);
 	}
 
@@ -40,7 +45,7 @@ export class Doc {
 	clear() {
 		// Generate a new EgWalker with a fresh replicaId to prevent event ID
 		// collisions with events from the old session that may exist on other replicas.
-		this.egWalker = new EgWalker(this);
+		this.egWalker = new EgWalker(this, undefined, undefined, this._logger);
 		this._root = new YMap(this, []);
 	}
 
@@ -98,7 +103,21 @@ export class Doc {
 	}
 
 	/**
-	 * Creates a new Doc instance from a JSON object.
+	 * Creates a new Doc instance from a plain JSON object.
+	 *
+	 * **LOSSY / NON-COLLABORATIVE.** This is a convenience loader for local,
+	 * single-replica use (display, tests, seeding). It does **not** preserve CRDT
+	 * identity:
+	 * - Array/text elements are assigned *synthetic, path-derived* ids
+	 *   (`snapshot:<path>:<index>`). These are not globally unique across
+	 *   replicas, so a document loaded this way on two replicas will mint
+	 *   colliding ids and **fail to converge** if then edited collaboratively.
+	 * - Tombstones (deleted-but-retained elements) are dropped, so concurrent
+	 *   edits that reference deleted positions cannot be integrated correctly.
+	 *
+	 * For any collaborative/sync flow, load from a snapshot instead
+	 * ({@link EgWalker.loadStateSnapshot} / `YMap.fromSnapshot`), which preserves
+	 * the real RGA ids and tombstones.
 	 * @param json The JSON object to deserialize.
 	 * @returns A new Doc instance with the deserialized data.
 	 */

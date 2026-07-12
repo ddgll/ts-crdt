@@ -187,11 +187,19 @@ export class YText {
 			this._idIndex.set(this._data[i].id, i);
 		}
 
+		// Undo splices out the exact [insertIdx, count] span rather than
+		// filtering by an id membership test (O(n*m) + full index rebuild). This
+		// is safe because undo closures are always invoked in strict LIFO order
+		// (see EgWalker._ingestEvents), so at undo time the inserted run is still
+		// contiguous at insertIdx. Only the shifted suffix is re-indexed.
 		const insertedIds = newItems.map(item => item.id);
+		const count = newItems.length;
 		return () => {
-			this._data = this._data.filter(item => !insertedIds.includes(item.id));
-			this._idIndex.clear();
-			for (let i = 0; i < this._data.length; i++) {
+			this._data.splice(insertIdx, count);
+			for (const id of insertedIds) {
+				this._idIndex.delete(id);
+			}
+			for (let i = insertIdx; i < this._data.length; i++) {
 				this._idIndex.set(this._data[i].id, i);
 			}
 		};
@@ -365,6 +373,12 @@ export class YText {
 
 	/**
 	 * Creates a YText instance from a plain string.
+	 *
+	 * **LOSSY / NON-COLLABORATIVE:** all characters share a single synthetic
+	 * path-derived anchor id (`snapshot:<path>`), which is not globally unique
+	 * across replicas. A string-loaded text cannot be safely used in a
+	 * collaborative sync flow — use {@link YText.fromSnapshot} (which preserves
+	 * real per-character ids and tombstones) for that. See {@link Doc.fromJSON}.
 	 * @param doc The parent document.
 	 * @param path The path of the text within the document.
 	 * @param text The initial string content.
