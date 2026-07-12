@@ -3,8 +3,8 @@ import {
 	TEXT_DELETE_OP,
 	TEXT_FORMAT_OP,
 	TEXT_INSERT_OP,
-	compareEventIds,
 } from "../eventGraph/eventGraph.js";
+import { rgaInsertIndex } from "./rga.js";
 
 /**
  * Represents a formatting range applied to the text.
@@ -168,24 +168,9 @@ export class YText {
 	 * @internal
 	 */
 	_applyInsert(eventId: string, afterId: string | null, text: string): () => void {
-		let insertIdx = 0;
-		if (afterId !== null) {
-			const idx = this._idIndex.get(afterId);
-			if (idx !== undefined) {
-				insertIdx = idx + 1;
-				// RGA tie-breaking: skip past siblings with smaller event IDs
-				while (insertIdx < this._data.length) {
-					const siblingBaseId = this._data[insertIdx].id.split(':').slice(0, 2).join(':');
-					if (compareEventIds(siblingBaseId, eventId) < 0) {
-						insertIdx++;
-					} else {
-						break;
-					}
-				}
-			} else {
-				insertIdx = this._data.length;
-			}
-		}
+		// RGA tie-breaking is shared with YArray via rgaInsertIndex so the
+		// convergence-critical convention lives in exactly one place.
+		const insertIdx = rgaInsertIndex(this._data, this._idIndex, afterId, eventId);
 
 		const newItems: YTextItem[] = [];
 		for (let i = 0; i < text.length; i++) {

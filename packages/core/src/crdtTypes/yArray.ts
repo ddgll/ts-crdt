@@ -4,8 +4,8 @@ import { YText } from "./yText.js";
 import {
 	ARRAY_DELETE_OP,
 	ARRAY_INSERT_OP,
-	compareEventIds,
 } from "../eventGraph/eventGraph.js";
+import { rgaInsertIndex } from "./rga.js";
 
 /**
  * Internal representation of an item in the YArray.
@@ -125,27 +125,9 @@ export class YArray {
 	 * @internal
 	 */
 	_applyInsert(eventId: string, afterId: string | null, values: unknown[]): () => void {
-		let insertIdx = 0;
-		if (afterId !== null) {
-			const idx = this._idIndex.get(afterId);
-			if (idx !== undefined) {
-				insertIdx = idx + 1;
-				// RGA tie-breaking: skip past siblings inserted after the
-				// same anchor that have a smaller event ID prefix.
-				while (insertIdx < this._data.length) {
-					const siblingBaseId = this._data[insertIdx].id.split(':').slice(0, 2).join(':');
-					const myBaseId = eventId;
-					if (compareEventIds(siblingBaseId, myBaseId) < 0) {
-						insertIdx++;
-					} else {
-						break;
-					}
-				}
-			} else {
-				// Fallback if afterId not found (shouldn't happen with valid topological sort)
-				insertIdx = this._data.length;
-			}
-		}
+		// RGA tie-breaking is shared with YText via rgaInsertIndex so the
+		// convergence-critical convention lives in exactly one place.
+		const insertIdx = rgaInsertIndex(this._data, this._idIndex, afterId, eventId);
 
 		const newItems: YArrayItem[] = values.map((val, i) => ({
 			id: `${eventId}:${i}`,
