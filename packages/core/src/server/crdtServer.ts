@@ -140,10 +140,13 @@ export class CrdtServer {
       } else {
         console.log("No existing events. Initializing new document.");
         this.doc.getMap().getArray("content").insert(0, []);
-        const events = this.doc.egWalker.getStateSnapshot().graph.events;
-        const event = events[events.length - 1][1];
-        if (event) {
-          await this.repository.saveEvents([event]);
+        // Persist all seed events explicitly rather than only the last graph
+        // event, so the repository holds a complete, replayable history.
+        const seedEvents = this.doc.egWalker
+          .getStateSnapshot()
+          .graph.events.map(([, event]) => event);
+        if (seedEvents.length > 0) {
+          await this.repository.saveEvents(seedEvents);
         }
       }
 
@@ -310,17 +313,23 @@ export class CrdtServer {
           }
           eventIds.add(event.replicaId);
 
-          // Buffer or persist the event using repository
-          if (this.compactionPromise) {
-            if (this.backgroundEventsBuffer) {
-              this.backgroundEventsBuffer.push(event);
+          // Integrate first — integration is tolerant of missing parents (it
+          // buffers orphans) and never throws — then persist only what was
+          // actually integrated. This guarantees a persisted event is always
+          // replayable (all its parents are present), so an out-of-order or
+          // orphaned event can never be saved-but-unintegrated and brick the
+          // room on reload. `integrated` also includes any previously-buffered
+          // events that this one unblocked, so nothing integrated is lost.
+          const integrated = this.doc.egWalker.integrateRemote([event]) ?? [];
+          if (integrated.length > 0) {
+            if (this.compactionPromise) {
+              if (this.backgroundEventsBuffer) {
+                this.backgroundEventsBuffer.push(...integrated);
+              }
+            } else {
+              await this.repository.saveEvents(integrated);
             }
-          } else {
-            await this.repository.saveEvents([event]);
           }
-
-          // Eagerly integrate locally
-          this.doc.egWalker.integrateRemote([event]);
 
           // Eagerly broadcast to all local clients
           const broadcastMsg: ServerMessage = { type: "event", data: event };
@@ -414,7 +423,14 @@ export class CrdtServer {
     this.doc = new Doc();
     this.sockets.clear();
     this.socketReplicaIds.clear();
-    
+
+    // Reset lifecycle/bookkeeping flags so a subsequent initialize() actually
+    // reloads state instead of short-circuiting on a stale `initialized` flag.
+    this.initialized = false;
+    this.initializingPromise = null;
+    this.eventCountSinceCompaction = 0;
+    this.serverSequenceNumber = 0;
+
     if (this.unsubscribeFromPubSub) {
       this.unsubscribeFromPubSub();
       this.unsubscribeFromPubSub = null;
@@ -425,10 +441,12 @@ export class CrdtServer {
     }
 
     this.doc.getMap().getArray("content").insert(0, []);
-    const events = this.doc.egWalker.getStateSnapshot().graph.events;
-    const event = events[events.length - 1][1];
-    if (event) {
-      await this.repository.saveEvents([event]);
+    // Persist all seed events explicitly (see initialize()).
+    const seedEvents = this.doc.egWalker
+      .getStateSnapshot()
+      .graph.events.map(([, event]) => event);
+    if (seedEvents.length > 0) {
+      await this.repository.saveEvents(seedEvents);
     }
   }
 

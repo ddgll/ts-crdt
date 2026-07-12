@@ -205,6 +205,14 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 
 /**
  * Compares two event IDs deterministically.
+ *
+ * The numeric part of an event id is a Lamport timestamp (see
+ * `EgWalker.generateNextSequenceNumber`), so comparing it first gives a
+ * causally-consistent total order: if event `a` happened-before event `b`,
+ * then `b`'s timestamp is strictly greater, so `b` compares greater. The
+ * `replicaId` tiebreak deterministically resolves concurrent events (equal
+ * timestamps). This ordering is what makes last-writer-wins respect
+ * happened-before.
  * @param id1 The first event ID.
  * @param id2 The second event ID.
  * @returns A negative number if id1 < id2, a positive number if id1 > id2, or 0 if equal.

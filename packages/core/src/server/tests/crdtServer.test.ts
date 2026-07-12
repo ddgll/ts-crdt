@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
-import { CrdtServer, Repository, MinimalWebSocket } from "../crdtServer.js";
+import { describe, expect, it, vi } from "vitest";
+import { CrdtServer, MinimalWebSocket, Repository } from "../crdtServer.js";
 import { InMemoryPubSubAdapter } from "../pubSubAdapter.js";
-import { CrdtEvent } from "../../index.js";
+import { CrdtEvent, Doc } from "../../index.js";
 
 class MockRepository implements Repository {
   events: CrdtEvent[] = [];
@@ -9,11 +9,6 @@ class MockRepository implements Repository {
   getEventsCalls = 0;
   clearEventsCalls = 0;
   shouldFail = false;
-
-  async clearEvents(): Promise<void> {
-    this.clearEventsCalls++;
-    this.events = [];
-  }
 
   async getEvents(): Promise<CrdtEvent[]> {
     this.getEventsCalls++;
@@ -38,7 +33,7 @@ class MockWebSocket implements MinimalWebSocket {
   sentData: string[] = [];
   readyState = 1; // OPEN
   closeCalled = 0;
-  
+
   private messageListeners: ((data: unknown) => void)[] = [];
   private closeListeners: (() => void)[] = [];
   private errorListeners: ((err: unknown) => void)[] = [];
@@ -133,15 +128,23 @@ describe("CrdtServer", () => {
     const ws1 = new MockWebSocket();
     await server.handleConnection(ws1);
 
-    // Make an edit
-    const localDoc = server.getDoc();
-    localDoc.getMap().getArray("content").insert(0, ["a"]);
-    const events2 = localDoc.egWalker.getStateSnapshot().graph.events;
+    // Make an edit as a client would: build the event on a separate doc that has
+    // synced the server's state, then deliver it over the socket. (Applying it
+    // directly to the server's own doc first would make it a duplicate, which the
+    // server correctly refuses to re-persist.)
+    const clientDoc = new Doc("client-1");
+    clientDoc.egWalker.integrateRemote(
+      server.getDoc().egWalker.graph.getAllEvents(),
+    );
+    clientDoc.getMap().getArray("content").insert(0, ["a"]);
+    const events2 = clientDoc.egWalker.getStateSnapshot().graph.events;
     const dummyEvent = events2[events2.length - 1][1];
     ws1.emit("message", JSON.stringify(dummyEvent));
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(server.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
+    expect(server.getDoc().getMap().getArray("content")?.toJSON()).toEqual([
+      "a",
+    ]);
     expect(repo.events.length).toBe(2); // init event + "a"
 
     // Disconnect all clients
@@ -154,7 +157,9 @@ describe("CrdtServer", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     // State should remain ["a"], not ["a", "a"]
-    expect(server.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
+    expect(server.getDoc().getMap().getArray("content")?.toJSON()).toEqual([
+      "a",
+    ]);
   });
 });
 
@@ -172,12 +177,17 @@ describe("Security Hardening Limits", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     // Create a message > 100 bytes
-    const largeMessage = JSON.stringify({ type: "dummy", data: "x".repeat(150) });
+    const largeMessage = JSON.stringify({
+      type: "dummy",
+      data: "x".repeat(150),
+    });
     ws1.emit("message", largeMessage);
 
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected oversized message"));
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Rejected oversized message"),
+    );
     expect(repo.events.length).toBe(1); // Only the initial event, nothing was saved
 
     warnSpy.mockRestore();
@@ -196,17 +206,23 @@ describe("Security Hardening Limits", () => {
     const initialEventsCount = repo.events.length;
 
     // Emit event with invalid ID "foo"
-    ws1.emit("message", JSON.stringify({
-      id: "foo",
-      replicaId: "client1",
-      parents: [],
-      op: { type: "map-set", path: [], key: "k", value: "v" }
-    }));
+    ws1.emit(
+      "message",
+      JSON.stringify({
+        id: "foo",
+        replicaId: "client1",
+        parents: [],
+        op: { type: "map-set", path: [], key: "k", value: "v" },
+      }),
+    );
 
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(repo.events.length).toBe(initialEventsCount); // No new event should be saved
-    expect(warnSpy).toHaveBeenCalledWith("Rejected invalid event from client:", expect.any(Object));
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Rejected invalid event from client:",
+      expect.any(Object),
+    );
 
     warnSpy.mockRestore();
   });
@@ -225,12 +241,20 @@ describe("Security Hardening Limits", () => {
 
     // Send 3 events quickly
     for (let i = 0; i < 3; i++) {
-      ws1.emit("message", JSON.stringify({ type: "awareness", data: { replicaId: "client1", state: {} } }));
+      ws1.emit(
+        "message",
+        JSON.stringify({
+          type: "awareness",
+          data: { replicaId: "client1", state: {} },
+        }),
+      );
     }
 
     await new Promise((resolve) => setTimeout(resolve, 10));
 
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rate limit exceeded for socket"));
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Rate limit exceeded for socket"),
+    );
 
     warnSpy.mockRestore();
   });
@@ -250,35 +274,60 @@ describe("Security Hardening Limits", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     // 1. array-insert
-    ws1.emit("message", JSON.stringify({
-      id: "client1:1",
-      replicaId: "client1",
-      parents: [],
-      op: { type: "array-insert", path: [], afterId: null, values: [1, 2, 3] }
-    }));
+    ws1.emit(
+      "message",
+      JSON.stringify({
+        id: "client1:1",
+        replicaId: "client1",
+        parents: [],
+        op: {
+          type: "array-insert",
+          path: [],
+          afterId: null,
+          values: [1, 2, 3],
+        },
+      }),
+    );
 
     // 2. text-insert
-    ws1.emit("message", JSON.stringify({
-      id: "client1:2",
-      replicaId: "client1",
-      parents: [],
-      op: { type: "text-insert", path: [], afterId: null, text: "too long" }
-    }));
+    ws1.emit(
+      "message",
+      JSON.stringify({
+        id: "client1:2",
+        replicaId: "client1",
+        parents: [],
+        op: { type: "text-insert", path: [], afterId: null, text: "too long" },
+      }),
+    );
 
     // 3. map-set
-    ws1.emit("message", JSON.stringify({
-      id: "client1:3",
-      replicaId: "client1",
-      parents: [],
-      op: { type: "map-set", path: [], key: "k", value: "this is larger than 10 bytes" }
-    }));
+    ws1.emit(
+      "message",
+      JSON.stringify({
+        id: "client1:3",
+        replicaId: "client1",
+        parents: [],
+        op: {
+          type: "map-set",
+          path: [],
+          key: "k",
+          value: "this is larger than 10 bytes",
+        },
+      }),
+    );
 
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(warnSpy).toHaveBeenCalledTimes(3);
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected array-insert"));
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected text-insert"));
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Rejected map-set"));
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Rejected array-insert"),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Rejected text-insert"),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Rejected map-set"),
+    );
 
     warnSpy.mockRestore();
   });
@@ -296,7 +345,10 @@ describe("Security Hardening Limits", () => {
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const largeMessage = JSON.stringify({ type: "dummy", data: "x".repeat(150) });
+    const largeMessage = JSON.stringify({
+      type: "dummy",
+      data: "x".repeat(150),
+    });
 
     // Fire 1000 synchronous large messages
     for (let i = 0; i < 1000; i++) {
@@ -305,9 +357,11 @@ describe("Security Hardening Limits", () => {
 
     // The socket should have been closed after 5 violations
     expect(ws1.closeCalled).toBeGreaterThan(0);
-    
+
     // The messageQueue should not have ballooned
-    expect((server as unknown as { messageQueue: unknown[] }).messageQueue.length).toBe(0);
+    expect(
+      (server as unknown as { messageQueue: unknown[] }).messageQueue.length,
+    ).toBe(0);
 
     warnSpy.mockRestore();
   });
@@ -355,8 +409,12 @@ describe("Clustered execution via InMemoryPubSubAdapter", () => {
     expect(parsedEvent.data.id).toBe(dummyEvent!.id);
 
     // Doc states on both servers must converge
-    expect(server1.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
-    expect(server2.getDoc().getMap().getArray("content")?.toJSON()).toEqual(["a"]);
+    expect(server1.getDoc().getMap().getArray("content")?.toJSON()).toEqual([
+      "a",
+    ]);
+    expect(server2.getDoc().getMap().getArray("content")?.toJSON()).toEqual([
+      "a",
+    ]);
   });
 
   it("should not double-integrate events when publishing to PubSub", async () => {
@@ -368,15 +426,18 @@ describe("Clustered execution via InMemoryPubSubAdapter", () => {
     const ws1 = new MockWebSocket();
     await server1.handleConnection(ws1);
 
-    const initialEventsCount = server1.getDoc().egWalker.graph.getAllEvents().length;
+    const initialEventsCount =
+      server1.getDoc().egWalker.graph.getAllEvents().length;
 
     const localDoc = server1.getDoc();
     localDoc.getMap().getArray("content").insert(0, ["b"]);
     const events = localDoc.egWalker.getStateSnapshot().graph.events;
     const dummyEvent = events[events.length - 1][1];
-    
+
     let integrateCalls = 0;
-    const originalIntegrate = server1.getDoc().egWalker.integrateRemote.bind(server1.getDoc().egWalker);
+    const originalIntegrate = server1.getDoc().egWalker.integrateRemote.bind(
+      server1.getDoc().egWalker,
+    );
     server1.getDoc().egWalker.integrateRemote = (evs) => {
       integrateCalls++;
       originalIntegrate(evs);
@@ -387,7 +448,9 @@ describe("Clustered execution via InMemoryPubSubAdapter", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(integrateCalls).toBe(1);
-    expect(server1.getDoc().egWalker.graph.getAllEvents().length).toBe(initialEventsCount + 1);
+    expect(server1.getDoc().egWalker.graph.getAllEvents().length).toBe(
+      initialEventsCount + 1,
+    );
   });
 });
 
@@ -397,16 +460,16 @@ describe("serverInstances TTL", () => {
   it("should remove server from global map after idle timeout", async () => {
     const repo = new MockRepository();
     const ws1 = new MockWebSocket();
-    
+
     // Connect first client
     await handleWebSocket(ws1, "ttl-room", repo, { idleTimeoutMs: 10 });
     expect(serverInstances.has("ttl-room")).toBe(true);
-    
+
     // Disconnect
     ws1.emit("close");
-    
+
     // Wait for the real timer (10ms) to fire + some buffer
-    await new Promise(resolve => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     // Verify it was removed
     expect(serverInstances.has("ttl-room")).toBe(false);

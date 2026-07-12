@@ -51,6 +51,13 @@ export class EgWalker {
 	/** The underlying event graph instance. */
 	public graph: EventGraph;
 	private replicaId: string;
+	/**
+	 * The replica's Lamport logical clock, stored as "the next sequence number to
+	 * assign". It is advanced past the sequence number of every observed event
+	 * (local or remote) so that the numeric part of each new event id is a Lamport
+	 * timestamp — strictly greater than that of every causally-preceding event.
+	 * This is what makes `compareEventIds` (seq-first) a causally-consistent order.
+	 */
 	private sequenceNumber = 0;
 	/** A map of awareness states for connected replicas. */
 	public awarenessStates = new Map<string, unknown>();
@@ -58,6 +65,13 @@ export class EgWalker {
 	private cachedSortedEvents: CrdtEvent[] = [];
 	private undoStack = new Map<EventID, () => void>();
 	private isAtHead = true;
+	/**
+	 * Events received whose parents are not yet all present in the graph.
+	 * They are held here and retried on every ingest until their parents arrive,
+	 * so integration is tolerant of out-of-order / missing-parent delivery and
+	 * never calls `addEvent` with a missing parent (which would throw).
+	 */
+	private pendingEvents = new Map<EventID, CrdtEvent>();
 
 	/**
 	 * Registers a callback to be notified when a new event is applied (either locally or integrated from a remote replica).
@@ -119,11 +133,29 @@ export class EgWalker {
 	}
 
 	/**
-	 * Generates the next unique sequence number for an event from this replica.
+	 * Generates the next Lamport timestamp for a local event.
+	 *
+	 * Because the clock is advanced on observation of every event (see
+	 * `_ingestEvents`), the current value is already greater than the sequence
+	 * number of every event this replica has seen — including this event's
+	 * parents (the current heads). Returning it and post-incrementing therefore
+	 * yields a value that is strictly greater than every causal predecessor and
+	 * strictly increasing per replica (guaranteeing id uniqueness).
 	 * @returns The next sequence number.
 	 */
 	private generateNextSequenceNumber(): number {
 		return this.sequenceNumber++;
+	}
+
+	/**
+	 * Advances the Lamport clock past the sequence number of an observed event,
+	 * regardless of which replica produced it.
+	 */
+	private observeSequenceNumber(id: EventID): void {
+		const eventSequenceNumber = parseInt(id.split(":")[1], 10);
+		if (Number.isFinite(eventSequenceNumber) && eventSequenceNumber >= this.sequenceNumber) {
+			this.sequenceNumber = eventSequenceNumber + 1;
+		}
 	}
 
 	/**
@@ -159,19 +191,48 @@ export class EgWalker {
 		const oldSorted = [...this.cachedSortedEvents];
 		const addedEvents: CrdtEvent[] = [];
 
+		// Stage every genuinely-new event into the pending pool. Events already in
+		// the graph or already pending are ignored (idempotent integration).
 		for (const event of events) {
 			if (this.graph.getEvent(event.id)) {
 				continue;
 			}
-			if (event.replicaId === this.replicaId) {
-				const eventSequenceNumber = parseInt(event.id.split(":")[1], 10);
-				if (eventSequenceNumber >= this.sequenceNumber) {
-					this.sequenceNumber = eventSequenceNumber + 1;
+			if (this.pendingEvents.has(event.id)) {
+				continue;
+			}
+			this.pendingEvents.set(event.id, event);
+		}
+
+		// Integrate every pending event whose parents are all present, repeating
+		// until no further progress is made — a newly-integrated event can unblock
+		// others. This tolerates out-of-order and missing-parent delivery: an event
+		// whose parents never arrive simply stays buffered instead of throwing.
+		if (this.pendingEvents.size > 0) {
+			let progress = true;
+			while (progress) {
+				progress = false;
+				for (const event of Array.from(this.pendingEvents.values())) {
+					const parentsPresent = event.parents.every(
+						(p) => this.graph.getEvent(p) !== undefined,
+					);
+					if (!parentsPresent) continue;
+
+					try {
+						this.graph.addEvent(event);
+					} catch (err) {
+						// Structurally invalid event (bad op type, self-parent, ...).
+						// Drop it so a single bad event can neither abort the batch nor be
+						// retried forever, leaving the graph half-applied.
+						console.error("[EgWalker] Dropping un-integrable event:", event.id, err);
+						this.pendingEvents.delete(event.id);
+						continue;
+					}
+					this.pendingEvents.delete(event.id);
+					this.observeSequenceNumber(event.id);
+					addedEvents.push(event);
+					progress = true;
 				}
 			}
-
-			this.graph.addEvent(event);
-			addedEvents.push(event);
 		}
 
 		if (addedEvents.length > 0) {
@@ -417,13 +478,32 @@ export class EgWalker {
 
 	/**
 	 * Integrates a list of remote events into the document.
+	 *
+	 * Integration is tolerant of missing parents and out-of-order delivery: an
+	 * event whose parents are not yet present is buffered and integrated later
+	 * once they arrive. It never throws for a missing parent.
 	 * @param events The array of events to integrate.
+	 * @returns The events that were actually integrated into the graph by this
+	 *   call, in causal order. This includes any previously-buffered events that
+	 *   the incoming events unblocked, and excludes duplicates and still-orphaned
+	 *   events. Callers persisting integrated events should persist exactly this
+	 *   list so that a saved event is always replayable.
 	 */
-	integrateRemote(events: CrdtEvent[]) {
+	integrateRemote(events: CrdtEvent[]): CrdtEvent[] {
 		const added = this._ingestEvents(events);
 		for (const event of added) {
 			this.notifyListeners(event, event.replicaId === this.replicaId);
 		}
+		return added;
+	}
+
+	/**
+	 * Returns the number of events currently buffered awaiting their parents.
+	 * Useful for observability and tests; a persistently non-zero value indicates
+	 * events whose parents have not (yet) been delivered.
+	 */
+	getPendingEventCount(): number {
+		return this.pendingEvents.size;
 	}
 
 	/**
@@ -447,14 +527,12 @@ export class EgWalker {
 	 */
 	loadStateSnapshot(snapshot: StateSnapshot) {
 		this.graph = new EventGraph();
+		this.pendingEvents.clear();
 		snapshot.graph.events.forEach(([_, event]) => {
 			this.graph.addEvent(event);
-			if (event.replicaId === this.replicaId) {
-				const eventSequenceNumber = parseInt(event.id.split(":")[1], 10);
-				if (eventSequenceNumber >= this.sequenceNumber) {
-					this.sequenceNumber = eventSequenceNumber + 1;
-				}
-			}
+			// Advance the Lamport clock on observation of every event, regardless of
+			// origin replica, so subsequent local ops causally follow the snapshot.
+			this.observeSequenceNumber(event.id);
 		});
 
 		if (snapshot.replicaId === this.replicaId) {

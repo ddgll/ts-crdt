@@ -96,8 +96,10 @@ describe("YText Concurrent Edits", () => {
 		const doc2LastEvent = doc2.egWalker.graph.getAllEvents().find(e => e.op.type === "text-insert" && (e.op as { text: string }).text === "B")!;
 		doc1.egWalker.integrateRemote([doc2LastEvent]);
 
-		// "replicaB:0" has a smaller sequence number than "replicaA:1", so it orders first
-		expect(doc1.getMap().getText("txt").toString()).toEqual("XBA");
-		expect(doc2.getMap().getText("txt").toString()).toEqual("XBA");
+		// "A" and "B" are concurrent (each replica observed only "X"), so both
+		// carry the same Lamport timestamp (1) and tie-break by replicaId
+		// ("replicaA" < "replicaB"), placing "A" first. Both replicas converge.
+		expect(doc1.getMap().getText("txt").toString()).toEqual("XAB");
+		expect(doc2.getMap().getText("txt").toString()).toEqual("XAB");
 	});
 });

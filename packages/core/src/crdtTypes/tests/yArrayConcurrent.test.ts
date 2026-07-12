@@ -68,8 +68,11 @@ describe("YArray and YText Concurrent Edits", () => {
 		doc1.egWalker.integrateRemote([doc2LastEvent]);
 
 		// Both should match perfectly without needing a clear/rebuild.
-		// "replicaB:0" has a smaller sequence number than "replicaA:1", so it orders first
-		expect(doc1.getMap().getArray("arr").toJSON()).toEqual(["Anchor", "FromB", "FromA"]);
-		expect(doc2.getMap().getArray("arr").toJSON()).toEqual(["Anchor", "FromB", "FromA"]);
+		// FromA and FromB are genuinely concurrent — each replica observed only
+		// "Anchor" before inserting — so both carry the same Lamport timestamp (1)
+		// and are tie-broken deterministically by replicaId ("replicaA" < "replicaB"),
+		// placing FromA first. The essential property is that both replicas converge.
+		expect(doc1.getMap().getArray("arr").toJSON()).toEqual(["Anchor", "FromA", "FromB"]);
+		expect(doc2.getMap().getArray("arr").toJSON()).toEqual(["Anchor", "FromA", "FromB"]);
 	});
 });
