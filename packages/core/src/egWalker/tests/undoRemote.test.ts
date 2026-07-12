@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Doc } from "../../crdtTypes/doc.js";
-import { UndoManager } from "../undoManager.js";
+import { UndoManager } from "../UndoManager.js";
 
 describe("UndoManager with remote concurrent edits", () => {
 	it("should undo correctly after receiving remote events", () => {

@@ -187,6 +187,32 @@ export class YArray {
 
 
 	/**
+	 * Captures the parameters needed to re-insert the given items, for undoing a
+	 * delete. Reads the current internal order so the revived content is placed
+	 * back after the same predecessor. Must be called while the target items are
+	 * still present (i.e. before the delete is applied, or against a tombstone that
+	 * has not been garbage-collected).
+	 * @param targetIds The ids of the items whose content should be revived.
+	 * @returns The anchor id and values for an {@link ARRAY_INSERT_OP}, or null if
+	 *   none of the targets are present.
+	 * @internal
+	 */
+	_captureReinsert(targetIds: string[]): { afterId: string | null; values: unknown[] } | null {
+		const idSet = new Set(targetIds);
+		const values: unknown[] = [];
+		let firstIdx = -1;
+		for (let i = 0; i < this._data.length; i++) {
+			if (idSet.has(this._data[i].id)) {
+				if (firstIdx === -1) firstIdx = i;
+				values.push(this._data[i].value);
+			}
+		}
+		if (firstIdx === -1) return null;
+		const afterId = firstIdx > 0 ? this._data[firstIdx - 1].id : null;
+		return { afterId, values };
+	}
+
+	/**
 	 * Performs garbage collection by cleanly splicing out elements marked as deleted.
 	 * 
 	 * WARNING: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization.

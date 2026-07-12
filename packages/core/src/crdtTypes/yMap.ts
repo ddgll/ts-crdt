@@ -124,6 +124,38 @@ export class YMap {
 	}
 
 	/**
+	 * Lowers the LWW event id of an existing entry to `eventId`, but only if the
+	 * entry currently has no id or a strictly greater one.
+	 *
+	 * This is used to converge the id of a nested container that was created
+	 * locally without an event (via {@link getMap}/{@link getArray}/{@link getText},
+	 * which store `eventId: undefined`) with the id it receives on a remote replica,
+	 * where the container is materialized lazily by the first operation that
+	 * traverses it. Because events are always applied in ascending id order, the
+	 * first op to touch a container carries the smallest id; taking the minimum id
+	 * across every replica makes the container's LWW id replica-independent, so
+	 * concurrent container-vs-primitive conflicts resolve identically everywhere.
+	 * @param key The key whose entry should be (re)stamped.
+	 * @param eventId The candidate event id.
+	 * @returns An undo closure that restores the previous event id.
+	 * @internal
+	 */
+	_stampEventId(key: string, eventId: string): () => void {
+		const existing = this._map.get(key);
+		if (!existing) {
+			return () => {};
+		}
+		const prevEventId = existing.eventId;
+		if (prevEventId !== undefined && compareEventIds(eventId, prevEventId) >= 0) {
+			return () => {};
+		}
+		existing.eventId = eventId;
+		return () => {
+			existing.eventId = prevEventId;
+		};
+	}
+
+	/**
 	 * Gets the value associated with a key.
 	 * @param key The key to retrieve.
 	 * @returns The value associated with the key, or undefined if the key does not exist.
@@ -135,8 +167,14 @@ export class YMap {
 	/**
 	 * Gets a nested YMap associated with a key.
 	 * If the key does not exist or holds a different type, a new YMap is created and set.
-	 * No event is generated for the container creation — operations on the created
-	 * container will cause it to be created on remote replicas via path traversal.
+	 *
+	 * Container lifecycle: creating a container generates no event and is stored
+	 * with `eventId: undefined`, so an empty, never-written container is purely
+	 * local and invisible to peers. The first operation that writes into it (or
+	 * traverses it) replicates it: on remote replicas the container is materialized
+	 * lazily by that op, and on every replica its LWW event id converges to the
+	 * smallest id of any op that reaches it (see {@link _stampEventId}). This makes
+	 * concurrent container-vs-primitive conflicts resolve identically everywhere.
 	 * @param key The key of the nested map.
 	 * @returns The nested YMap instance.
 	 */
@@ -157,8 +195,9 @@ export class YMap {
 	/**
 	 * Gets a nested YArray associated with a key.
 	 * If the key does not exist or holds a different type, a new YArray is created and set.
-	 * No event is generated for the container creation — operations on the created
-	 * container will cause it to be created on remote replicas via path traversal.
+	 * No event is generated for the container creation; it is replicated (and its
+	 * LWW id converged across replicas) by the first operation that writes into it.
+	 * See {@link getMap} for the full container lifecycle.
 	 * @param key The key of the nested array.
 	 * @returns The nested YArray instance.
 	 */
@@ -179,8 +218,9 @@ export class YMap {
 	/**
 	 * Gets a nested YText associated with a key.
 	 * If the key does not exist or holds a different type, a new YText is created and set.
-	 * No event is generated for the container creation — operations on the created
-	 * container will cause it to be created on remote replicas via path traversal.
+	 * No event is generated for the container creation; it is replicated (and its
+	 * LWW id converged across replicas) by the first operation that writes into it.
+	 * See {@link getMap} for the full container lifecycle.
 	 * @param key The key of the nested text.
 	 * @returns The nested YText instance.
 	 */

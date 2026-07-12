@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Doc } from "../../crdtTypes/doc.js";
-import { UndoManager } from "../undoManager.js";
+import { UndoManager } from "../UndoManager.js";
 
 describe("Undo Edge Cases", () => {
 	it("should undo local actions even if interleaved with remote edits", () => {

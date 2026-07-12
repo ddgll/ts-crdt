@@ -62,6 +62,7 @@ export class EgWalker {
 	/** A map of awareness states for connected replicas. */
 	public awarenessStates = new Map<string, unknown>();
 	private eventListeners = new Set<(event: CrdtEvent, isLocal: boolean) => void>();
+	private beforeLocalApplyListeners = new Set<(event: CrdtEvent) => void>();
 	private cachedSortedEvents: CrdtEvent[] = [];
 	private undoStack = new Map<EventID, () => void>();
 	private isAtHead = true;
@@ -96,6 +97,37 @@ export class EgWalker {
 				console.error("[EgWalker] Event listener error:", err);
 			}
 		}
+	}
+
+	/**
+	 * Registers a callback invoked for each local event *before* it is applied to
+	 * the document, while the document still reflects the pre-operation state.
+	 * This lets an observer (e.g. {@link UndoManager}) capture the information
+	 * needed to build an inverse operation. Returns an unsubscribe function.
+	 */
+	onBeforeLocalApply(cb: (event: CrdtEvent) => void): () => void {
+		this.beforeLocalApplyListeners.add(cb);
+		return () => {
+			this.beforeLocalApplyListeners.delete(cb);
+		};
+	}
+
+	private notifyBeforeLocalApply(event: CrdtEvent) {
+		for (const listener of this.beforeLocalApplyListeners) {
+			try {
+				listener(event);
+			} catch (err) {
+				console.error("[EgWalker] beforeLocalApply listener error:", err);
+			}
+		}
+	}
+
+	/**
+	 * Gets the document this walker is attached to.
+	 * @returns The parent {@link Doc}.
+	 */
+	getDocument(): Doc {
+		return this.doc;
 	}
 
 	/**
@@ -177,6 +209,9 @@ export class EgWalker {
 
 		this.graph.addEvent(event);
 		this.cachedSortedEvents = this.graph.getSortedEvents();
+		// Notify before-apply observers while the document still holds the
+		// pre-operation state, so they can capture inverse-operation data.
+		this.notifyBeforeLocalApply(event);
 		const undo = this.applyNewEvent(event);
 		this.undoStack.set(event.id, undo);
 		this.notifyListeners(event, true);
@@ -329,6 +364,16 @@ export class EgWalker {
 
 				if (val instanceof YMap || val instanceof YArray || val instanceof YText) {
 					next = val;
+					// Converge the container's LWW id to the smallest id of any op that
+					// traverses it. A container created locally by getMap/getArray/getText
+					// carries no id (undefined), while on a remote replica the same
+					// container is materialized lazily by the first op to reach it and so
+					// carries that op's id. Since events are applied in ascending id order,
+					// stamping the minimum id here makes the container's id replica-
+					// independent, so a concurrent primitive set resolves LWW the same way
+					// on every replica instead of depending on local call ordering.
+					const undoStamp = current._stampEventId(strKey, event.id);
+					undoActions.push(undoStamp);
 				} else if (val !== undefined) {
 					// It's a primitive. Do LWW comparison.
 					const existingEventId = wrapper?.eventId;

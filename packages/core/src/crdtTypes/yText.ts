@@ -256,6 +256,32 @@ export class YText {
 	}
 
 	/**
+	 * Captures the parameters needed to re-insert the given characters, for undoing
+	 * a delete. Reads the current internal order so the revived text is placed back
+	 * after the same predecessor. Must be called while the target characters are
+	 * still present (i.e. before the delete is applied, or against a tombstone that
+	 * has not been garbage-collected).
+	 * @param targetIds The ids of the characters whose content should be revived.
+	 * @returns The anchor id and text for a {@link TEXT_INSERT_OP}, or null if none
+	 *   of the targets are present.
+	 * @internal
+	 */
+	_captureReinsert(targetIds: string[]): { afterId: string | null; text: string } | null {
+		const idSet = new Set(targetIds);
+		let firstIdx = -1;
+		let text = "";
+		for (let i = 0; i < this._data.length; i++) {
+			if (idSet.has(this._data[i].id)) {
+				if (firstIdx === -1) firstIdx = i;
+				text += this._data[i].char;
+			}
+		}
+		if (firstIdx === -1) return null;
+		const afterId = firstIdx > 0 ? this._data[firstIdx - 1].id : null;
+		return { afterId, text };
+	}
+
+	/**
 	 * Gets the formatting ranges applied to this text.
 	 * Reconstructs continuous ranges of identical formatting.
 	 * @returns A copy of the formatting ranges array.
