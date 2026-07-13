@@ -161,6 +161,127 @@ describe("CrdtClient", () => {
     expect(ws.getListenerCount("message")).toBe(0);
   });
 
+  describe("reconnect resync", () => {
+    it("preserves and replays offline edits across a genuinely severed socket", () => {
+      const doc = new Doc("client-A");
+      const client = new CrdtClient(doc);
+
+      // Server's initial state (some pre-existing content).
+      const serverDoc = new Doc("server");
+      serverDoc.getMap().set("base", "1");
+      const initialSnapshot = serverDoc.egWalker.getStateSnapshot();
+
+      // 1. Connect and receive the initial snapshot.
+      const ws1 = new MockClientWebSocket();
+      client.bind(ws1);
+      ws1.emit("message", {
+        data: JSON.stringify({ type: "snapshot", data: initialSnapshot }),
+      });
+      expect(doc.getMap().get("base")).toBe("1");
+      const sentWhileOnline = ws1.sentData.length;
+
+      // 2. Genuinely sever the socket: mark it CLOSED and drop the object.
+      ws1.readyState = 3; // CLOSED
+      ws1.emit("close");
+
+      // 3. Make an edit while offline. It must not be lost and cannot be sent
+      //    over the severed socket.
+      doc.getMap().set("offline", "yes");
+      expect(doc.getMap().get("offline")).toBe("yes");
+      expect(ws1.sentData.length).toBe(sentWhileOnline);
+
+      // 4. Reconnect with a brand-new socket object via rebind().
+      const ws2 = new MockClientWebSocket(); // OPEN
+      client.rebind(ws2);
+
+      // 5. Server greets the new socket with a snapshot that predates the
+      //    offline edit (the server never received it).
+      ws2.emit("message", {
+        data: JSON.stringify({ type: "snapshot", data: initialSnapshot }),
+      });
+
+      // The offline edit survived the destructive snapshot load...
+      expect(doc.getMap().get("offline")).toBe("yes");
+      expect(doc.getMap().get("base")).toBe("1");
+
+      // ...and was replayed to the server over the new socket.
+      const offlineSends = ws2.sentData
+        .map((s) => JSON.parse(s))
+        .filter(
+          (m) =>
+            m.type === "event" &&
+            m.data.op.type === "map-set" &&
+            m.data.op.key === "offline",
+        );
+      expect(offlineSends.length).toBeGreaterThan(0);
+
+      client.unbind();
+    });
+
+    it("does not echo foreign events back after loading a snapshot", () => {
+      const doc = new Doc("client-B");
+      const client = new CrdtClient(doc);
+
+      const serverDoc = new Doc("server");
+      serverDoc.getMap().set("k", "v");
+      const snapshot = serverDoc.egWalker.getStateSnapshot();
+
+      const ws = new MockClientWebSocket();
+      client.bind(ws);
+      ws.emit("message", {
+        data: JSON.stringify({ type: "snapshot", data: snapshot }),
+      });
+
+      // The client had no local-only events, so nothing should be sent.
+      expect(ws.sentData.length).toBe(0);
+
+      client.unbind();
+    });
+
+    it("rebind switches sockets without throwing and moves listeners", () => {
+      const doc = new Doc("client-C");
+      const client = new CrdtClient(doc);
+
+      const ws1 = new MockClientWebSocket();
+      client.bind(ws1);
+      expect(ws1.getListenerCount("message")).toBe(1);
+
+      const ws2 = new MockClientWebSocket();
+      expect(() => client.rebind(ws2)).not.toThrow();
+
+      expect(ws1.getListenerCount("message")).toBe(0);
+      expect(ws1.getListenerCount("open")).toBe(0);
+      expect(ws2.getListenerCount("message")).toBe(1);
+
+      client.unbind();
+    });
+
+    it("flushes queued offline edits when a bound socket opens", () => {
+      const doc = new Doc("client-D");
+      const client = new CrdtClient(doc);
+
+      // Socket starts in CONNECTING state (not yet open).
+      const ws = new MockClientWebSocket();
+      ws.readyState = 0; // CONNECTING
+      client.bind(ws);
+
+      // Edit while the socket is still connecting: it must be queued, not sent.
+      doc.getMap().set("queued", "1");
+      expect(ws.sentData.length).toBe(0);
+
+      // Socket opens: the queued edit is flushed.
+      ws.readyState = 1; // OPEN
+      ws.emit("open");
+
+      const sends = ws.sentData
+        .map((s) => JSON.parse(s))
+        .filter((m) => m.type === "event" && m.data.op.key === "queued");
+      expect(sends.length).toBe(1);
+
+      client.unbind();
+    });
+  });
+
   describe("syncText", () => {
     it("should sync text to a YArray (character array) container", () => {
       const doc = new Doc("client-replica");
