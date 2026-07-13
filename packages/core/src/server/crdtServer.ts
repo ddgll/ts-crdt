@@ -480,6 +480,19 @@ export class CrdtServer {
 
   /**
    * Compacts the event graph to reduce memory usage and repository size.
+   *
+   * Rebuilds state at the last critical version, gc's the resulting snapshot to
+   * drop tombstones, and rewrites the remaining (post-critical-version) events to
+   * hang off the new snapshot event.
+   *
+   * gc'ing the snapshot is safe here even though tombstones are RGA anchors: an
+   * insert can only anchor (`afterId`) to an item its author had visible, so any
+   * event that anchors to a deleted item is causally *before* that deletion and
+   * hence an ancestor of the critical version — it is folded into the snapshot
+   * with its position already resolved, not left among the remaining events. No
+   * remaining event can reference a gc'd tombstone. This was the concern in
+   * PLAN_10; see `tests/compactionGcAnchorLoss.test.ts` for the reproduction
+   * attempt that confirms convergence is preserved.
    */
   async compact(): Promise<void> {
     if (this.isCompacting) return;
@@ -497,7 +510,8 @@ export class CrdtServer {
         this.doc.egWalker.graph.getEvents(version)
       );
       tempDoc.egWalker.integrateRemote(eventsToApply);
-      // Perform garbage collection to remove tombstones before saving snapshot
+      // Drop tombstones before saving the snapshot. Safe because no remaining
+      // event can anchor into a gc'd tombstone (see compact() docstring / PLAN_10).
       tempDoc.gc(true);
       const snap = tempDoc.getSnapshot();
       const snapshotState = isRecord(snap) ? snap : {};
