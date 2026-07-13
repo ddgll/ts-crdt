@@ -67,8 +67,33 @@ export class EgWalkerError extends Error {
 }
 
 /**
- * The EgWalker (Event Graph Walker) is the core engine for processing and applying CRDT events.
- * It manages the event graph, replica state, and document modifications.
+ * The core engine for processing and applying CRDT events. It manages the
+ * event graph, replica state, and document modifications.
+ *
+ * **On the name.** "EgWalker" is short for "Event Graph Walker" and refers to
+ * the event-graph *data structure* this class walks — it is **not** an
+ * implementation of the Eg-walker algorithm (Kleppmann/Gentle, "Collaborative
+ * Text Editing with Eg-walker"), whose purpose is to avoid the RGA
+ * interleaving anomaly.
+ *
+ * **How convergence actually works.** All replicas reach Strong Eventual
+ * Consistency by *deterministic total-order replay*, not by the Eg-walker
+ * algorithm:
+ *  1. Every event is kept in a DAG.
+ *  2. Events are placed in one global total order sorted by event id
+ *     (`compareEventIds`: Lamport sequence first, then replicaId). An
+ *     incremental fast path re-applies only the changed suffix; a lower-Lamport
+ *     event arriving late triggers a re-sort and suffix re-apply.
+ *  3. Ops are replayed in that order, resolving maps with LWW and arrays/text
+ *     with RGA index resolution keyed on stable ids.
+ *
+ * Because every replica runs the identical sequence over identical state, they
+ * converge on byte-identical results. Concurrent inserts sharing an anchor
+ * settle in ascending event-id order (the RGA tie-break) and **may interleave**
+ * — this inherits RGA's behavior, so the interleaving anomaly is possible and
+ * user intent is *not* guaranteed to be preserved for concurrent runs. If
+ * non-interleaving prose editing matters, that is a feature gap to track
+ * separately (adopt Eg-walker/Fugue-style insertion), not a bug.
  */
 export class EgWalker {
 	private doc: Doc;
