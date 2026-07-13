@@ -71,6 +71,13 @@ export class EgWalkerError extends Error {
  * It manages the event graph, replica state, and document modifications.
  */
 export class EgWalker {
+	/**
+	 * Default cap for {@link undoStack}. Chosen to comfortably cover the
+	 * concurrent suffix of a typical collaborative session (so the fast
+	 * incremental path is used in practice) while keeping retained closures
+	 * bounded. Tune per-instance via {@link setUndoStackLimit}.
+	 */
+	public static readonly DEFAULT_UNDO_STACK_LIMIT = 10_000;
 	private doc: Doc;
 	/** The underlying event graph instance. */
 	public graph: EventGraph;
@@ -88,7 +95,25 @@ export class EgWalker {
 	private eventListeners = new Set<(event: CrdtEvent, isLocal: boolean) => void>();
 	private beforeLocalApplyListeners = new Set<(event: CrdtEvent) => void>();
 	private cachedSortedEvents: CrdtEvent[] = [];
+	/**
+	 * Cache of per-event undo closures, keyed by event id, used purely to speed up
+	 * the incremental suffix-rebuild in {@link _ingestEvents}. It is NOT required
+	 * for correctness: whenever a needed undo is absent the ingest falls back to a
+	 * full rebuild from the sorted event list.
+	 *
+	 * Entries are held in most-recently-used order (a JS `Map` preserves insertion
+	 * order and {@link recordUndo} re-inserts on touch) and bounded by
+	 * {@link undoStackLimit}, so a long-lived client's undo cache never grows
+	 * without limit. Exceeding the cap evicts the least-recently-touched events,
+	 * which are the ones least likely to be part of a future concurrent suffix.
+	 */
 	private undoStack = new Map<EventID, () => void>();
+	/**
+	 * Upper bound on the number of retained undo closures. Bounds per-client
+	 * memory for long sessions with no snapshot reset; trades an occasional O(n)
+	 * full rebuild (when an evicted undo is needed) for a fixed memory ceiling.
+	 */
+	private undoStackLimit = EgWalker.DEFAULT_UNDO_STACK_LIMIT;
 	private isAtHead = true;
 	/**
 	 * Events received whose parents are not yet all present in the graph.
@@ -239,7 +264,7 @@ export class EgWalker {
 		// pre-operation state, so they can capture inverse-operation data.
 		this.notifyBeforeLocalApply(event);
 		const undo = this.applyNewEvent(event);
-		this.undoStack.set(event.id, undo);
+		this.recordUndo(event.id, undo);
 		this.notifyListeners(event, true);
 		return event;
 	}
@@ -249,6 +274,11 @@ export class EgWalker {
 	 * Returns the list of events that were actually new (not duplicates).
 	 */
 	private _ingestEvents(events: CrdtEvent[]): CrdtEvent[] {
+		// `cachedSortedEvents` borrows the graph's internal sorted array by
+		// reference (see EventGraph.getSortedEvents), which `addEvent` mutates in
+		// place below. This is the one site that needs a stable pre-ingest snapshot
+		// for the diff, so it is the only place we copy — everywhere else the
+		// walker borrows the graph's array to avoid a second full-length copy.
 		const oldSorted = [...this.cachedSortedEvents];
 		const addedEvents: CrdtEvent[] = [];
 
@@ -329,7 +359,7 @@ export class EgWalker {
 					// Redo phase
 					for (let i = diffIndex; i < newSorted.length; i++) {
 						const undo = this.applyNewEvent(newSorted[i]);
-						this.undoStack.set(newSorted[i].id, undo);
+						this.recordUndo(newSorted[i].id, undo);
 					}
 				} else {
 					// Fallback to full rebuild
@@ -337,7 +367,7 @@ export class EgWalker {
 					this.undoStack.clear();
 					for (const ev of newSorted) {
 						const undo = this.applyNewEvent(ev);
-						this.undoStack.set(ev.id, undo);
+						this.recordUndo(ev.id, undo);
 					}
 				}
 			} else {
@@ -346,7 +376,7 @@ export class EgWalker {
 				this.undoStack.clear();
 				for (const ev of newSorted) {
 					const undo = this.applyNewEvent(ev);
-					this.undoStack.set(ev.id, undo);
+					this.recordUndo(ev.id, undo);
 				}
 			}
 			this.cachedSortedEvents = newSorted;
@@ -578,6 +608,53 @@ export class EgWalker {
 	}
 
 	/**
+	 * Records an undo closure for an event, maintaining most-recently-used order
+	 * and enforcing {@link undoStackLimit}. Re-inserting an existing id moves it to
+	 * the MRU end; once the cap is exceeded the least-recently-touched entries are
+	 * evicted. Evicting a closure is always safe — a later ingest that needs a
+	 * missing undo simply falls back to a full rebuild.
+	 */
+	private recordUndo(id: EventID, undo: () => void): void {
+		// Delete-then-set so a touched id moves to the MRU (insertion) end.
+		this.undoStack.delete(id);
+		this.undoStack.set(id, undo);
+		while (this.undoStack.size > this.undoStackLimit) {
+			// Map iteration order is insertion order, so the first key is the
+			// least-recently-touched (oldest) entry.
+			const oldest = this.undoStack.keys().next().value;
+			if (oldest === undefined) break;
+			this.undoStack.delete(oldest);
+		}
+	}
+
+	/**
+	 * Sets the maximum number of undo closures retained for the incremental
+	 * suffix-rebuild optimization. Lower values bound memory more tightly at the
+	 * cost of more frequent full rebuilds; correctness is unaffected either way.
+	 * Immediately trims the stack if it currently exceeds the new limit.
+	 * @param limit A positive integer upper bound.
+	 */
+	setUndoStackLimit(limit: number): void {
+		if (!Number.isInteger(limit) || limit < 1) {
+			throw new EgWalkerError("undoStackLimit must be a positive integer");
+		}
+		this.undoStackLimit = limit;
+		while (this.undoStack.size > this.undoStackLimit) {
+			const oldest = this.undoStack.keys().next().value;
+			if (oldest === undefined) break;
+			this.undoStack.delete(oldest);
+		}
+	}
+
+	/**
+	 * Returns the number of undo closures currently retained. Useful for
+	 * observability and tests verifying the {@link undoStackLimit} bound.
+	 */
+	getUndoStackSize(): number {
+		return this.undoStack.size;
+	}
+
+	/**
 	 * Creates a snapshot of the current state of the document and event graph.
 	 * @returns A state snapshot object.
 	 */
@@ -636,7 +713,7 @@ export class EgWalker {
 		// Re-apply events in order
 		for (const event of sortedEvents) {
 			const undo = this.applyNewEvent(event);
-			this.undoStack.set(event.id, undo);
+			this.recordUndo(event.id, undo);
 		}
 
 		if (this.graph.isCriticalVersion(version)) {
