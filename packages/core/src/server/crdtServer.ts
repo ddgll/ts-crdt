@@ -1,4 +1,4 @@
-import { CrdtEvent, Doc, ServerMessage, isCrdtEvent } from "../index.js";
+import { CrdtEvent, Doc, ServerMessage, isCrdtEvent, generateReplicaId, SNAPSHOT_OP } from "../index.js";
 import { Logger, getLogger } from "../logger.js";
 import { PubSubAdapter } from "./pubSubAdapter.js";
 
@@ -66,6 +66,22 @@ export interface CrdtServerOptions {
    * only seeing console noise. Errors thrown by the hook itself are ignored.
    */
   onError?: (context: string, error: unknown) => void;
+  /**
+   * Single-writer/leader guard for clustered deployments. Compaction rewrites
+   * the *shared* repository (clear + re-save), so in a multi-process cluster
+   * only one process may perform it — otherwise two processes race to wipe and
+   * rewrite the same history, corrupting the persisted graph.
+   *
+   * When several {@link CrdtServer} processes serve the same room over a
+   * {@link PubSubAdapter}, provide this hook (backed by your own leader election
+   * / distributed lock) so it resolves truthy on exactly one process. A process
+   * for which it resolves falsy skips the repository rewrite; it still receives
+   * the resulting snapshot over pub/sub and rebuilds its in-memory state from
+   * it, so the whole cluster stays converged.
+   *
+   * Omit it for single-process deployments — compaction then always proceeds.
+   */
+  canCompact?: () => boolean | Promise<boolean>;
 }
 
 /**
@@ -91,6 +107,16 @@ export class CrdtServer {
   private compactionPromise: Promise<void> | null = null;
   private backgroundEventsBuffer: CrdtEvent[] | null = null;
   private serverSequenceNumber: number = 0;
+  /**
+   * Replica id used to mint snapshot event ids during compaction. It carries a
+   * per-instance random suffix so that two {@link CrdtServer} processes serving
+   * the same room over pub/sub can never mint the same snapshot id for
+   * different snapshot contents (which would make one silently drop the other's
+   * snapshot on {@link EventGraph.addEvent} and diverge permanently). It is
+   * regenerated per process; if snapshot-id determinism across restarts is
+   * required, persist and pass it back via the replica id yourself.
+   */
+  private snapshotReplicaId: string;
   private logger: Logger;
 
   /**
@@ -136,6 +162,9 @@ export class CrdtServer {
     this.pubSub = options?.pubSub;
     this.compactionThreshold = options?.compactionThreshold;
     this.options = options;
+    // Process-unique snapshot replica id (see field docs): prevents cross-process
+    // snapshot-id collisions when several servers cluster over pub/sub.
+    this.snapshotReplicaId = `server-${roomId}-${generateReplicaId()}`;
   }
 
   /**
@@ -153,9 +182,13 @@ export class CrdtServer {
         this.logger.info(`Loading ${events.length} events from the repository.`);
         this.doc.egWalker.integrateRemote(events);
         
-        // Initialize serverSequenceNumber based on existing server events
+        // Initialize serverSequenceNumber based on existing server snapshot
+        // events. Snapshot replica ids are `server-<room>[-<suffix>]`, so match
+        // on the prefix to cover both this instance's suffixed ids and any ids
+        // written by earlier instances/versions.
+        const serverReplicaPrefix = `server-${this.roomId}`;
         for (const event of events) {
-          if (event.replicaId === `server-${this.roomId}`) {
+          if (event.replicaId.startsWith(serverReplicaPrefix)) {
             const parts = event.id.split(':');
             if (parts.length === 2) {
               const seq = parseInt(parts[1], 10);
@@ -190,6 +223,23 @@ export class CrdtServer {
                 shouldBroadcast = false;
               } else {
                 this.doc.egWalker.integrateRemote([message.data]);
+              }
+            } else if (message.type === "snapshot") {
+              // Another process in the cluster compacted the shared history and
+              // rewrote the repository. Rebuild our in-memory state from its
+              // snapshot so we converge, instead of keeping a now-stale full
+              // graph whose events reference parents that peer just deleted.
+              const snapshotEventId = message.data.graph.events.find(
+                ([, event]) => event.op.type === SNAPSHOT_OP
+              )?.[0];
+              // Skip our own echo (or an already-applied snapshot): if the
+              // snapshot's root event is already in our graph we produced or
+              // integrated it, and re-loading would drop events that arrived
+              // after the snapshot was taken.
+              if (snapshotEventId && this.doc.egWalker.graph.getEvent(snapshotEventId)) {
+                shouldBroadcast = false;
+              } else {
+                this.doc.egWalker.loadStateSnapshot(message.data);
               }
             } else if (message.type === "awareness") {
               this.doc.egWalker.awarenessStates.set(message.data.replicaId, message.data.state);
@@ -485,6 +535,25 @@ export class CrdtServer {
     if (this.isCompacting) return;
     this.isCompacting = true;
     try {
+      // Clustered single-writer guard. Compaction rewrites the shared
+      // repository, so in a multi-process cluster only the leader may run it;
+      // followers skip and instead rebuild from the leader's snapshot when it
+      // is published over pub/sub (see the subscribe handler). `isCompacting`
+      // is already set, so this also serialises against concurrent callers.
+      if (this.options?.canCompact) {
+        let allowed = false;
+        try {
+          allowed = await this.options.canCompact();
+        } catch (err) {
+          this.reportError("canCompact hook threw; skipping compaction", err);
+          allowed = false;
+        }
+        if (!allowed) {
+          this.isCompacting = false;
+          return;
+        }
+      }
+
       const version = this.doc.egWalker.graph.getLastCriticalVersion();
       if (version.length === 0) {
         this.isCompacting = false;
@@ -505,7 +574,7 @@ export class CrdtServer {
       const { snapshotEvent, remainingEvents } = this.doc.egWalker.graph.compact(
         version,
         snapshotState,
-        `server-${this.roomId}`,
+        this.snapshotReplicaId,
         this.serverSequenceNumber++
       );
 
@@ -551,6 +620,14 @@ export class CrdtServer {
         if (client.readyState === 1) {
           client.send(snapshotMsgString);
         }
+      }
+
+      // Publish the snapshot to the rest of the cluster so peer processes rebuild
+      // from it instead of retaining a full graph that references history this
+      // process just rewrote in the shared repository. Peers dedupe our own echo
+      // via the snapshot event id (see the subscribe handler).
+      if (this.pubSub) {
+        await this.pubSub.publish(this.roomId, snapshotMsg);
       }
     } catch (err) {
       this.isCompacting = false;
