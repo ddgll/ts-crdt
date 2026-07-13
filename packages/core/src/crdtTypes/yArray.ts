@@ -20,8 +20,12 @@ interface YArrayItem {
  * A collaborative array that can be modified by multiple replicas.
  * It supports insertion, deletion, and replacement of elements.
  * 
- * **Note on Concurrency**: YArray resolves concurrent index-based operations
- * via deterministic event replay using RGA-like stable IDs, preserving user intent.
+ * **Note on Concurrency**: YArray converges by deterministic total-order replay
+ * of an RGA (see {@link rgaInsertIndex}); concurrent inserts sharing an anchor
+ * settle in ascending event-id order (the RGA tie-break) and **may interleave**.
+ * All replicas agree on the same result, but this is *not* the
+ * interleaving-avoiding Eg-walker algorithm, so contiguous concurrent runs are
+ * not guaranteed to stay contiguous — user intent is not preserved in that case.
  */
 export class YArray {
 	private _doc: Doc;

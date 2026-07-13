@@ -32,8 +32,12 @@ interface YTextItem {
  * A collaborative text type for rich-text editing.
  * It supports inserting text, deleting text, and applying formatting attributes.
  * 
- * **Note on Concurrency**: YText resolves concurrent index-based operations
- * via deterministic event replay using RGA-like stable IDs, preserving user intent.
+ * **Note on Concurrency**: YText converges by deterministic total-order replay
+ * of an RGA (see {@link rgaInsertIndex}); concurrent inserts sharing an anchor
+ * settle in ascending event-id order (the RGA tie-break) and **may interleave**.
+ * All replicas agree on the same result, but this is *not* the
+ * interleaving-avoiding Eg-walker algorithm, so concurrently-typed runs of text
+ * may be split into one another — user intent is not preserved in that case.
  */
 export class YText {
 	private _doc: Doc;
