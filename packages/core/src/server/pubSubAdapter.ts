@@ -26,8 +26,13 @@ export class InMemoryPubSubAdapter implements PubSubAdapter {
   async publish(roomId: string, message: ServerMessage): Promise<void> {
     const roomListeners = this.listeners.get(roomId);
     if (roomListeners) {
+      // Snapshot the listener set so that subscribe/unsubscribe calls triggered
+      // during dispatch cannot mutate the collection being iterated, and so a
+      // set that empties (and is dropped from `this.listeners`) before the
+      // microtask runs still delivers to the listeners present at publish time.
+      const listeners = [...roomListeners];
       queueMicrotask(() => {
-        for (const listener of roomListeners) {
+        for (const listener of listeners) {
           listener(message);
         }
       });
