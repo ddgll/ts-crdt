@@ -13,13 +13,7 @@ textarea.disabled = true;
 const urlParams = new URLSearchParams(window.location.search);
 const room = urlParams.get("room") || "default";
 const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-const ws = new WebSocket(`${protocol}//${window.location.host}/ws?room=${room}`);
-
-client.bind(ws);
-
-ws.onopen = () => {
-  console.log("Connected to server");
-};
+const wsUrl = `${protocol}//${window.location.host}/ws?room=${room}`;
 
 client.onMessage((type) => {
   if (type === "snapshot") {
@@ -30,15 +24,42 @@ client.onMessage((type) => {
   updateTextarea();
 });
 
-ws.onclose = () => {
-  console.log("Disconnected from server");
-  textarea.disabled = true;
-};
+// Reconnection story: on every disconnect we open a fresh WebSocket and hand it
+// to the client via rebind(). The client keeps a queue of local edits across
+// sockets, so anything typed while offline is replayed to the server once the
+// new connection is established (and survives the reconnect snapshot load).
+let reconnectDelay = 500;
+let isFirstConnection = true;
 
-ws.onerror = (error) => {
-  console.error("WebSocket error:", error);
-  textarea.disabled = true;
-};
+function connect() {
+  const ws = new WebSocket(wsUrl);
+
+  if (isFirstConnection) {
+    client.bind(ws);
+    isFirstConnection = false;
+  } else {
+    client.rebind(ws);
+  }
+
+  ws.onopen = () => {
+    console.log("Connected to server");
+    reconnectDelay = 500; // reset backoff on a successful connection
+  };
+
+  ws.onclose = () => {
+    console.log("Disconnected from server, will reconnect...");
+    textarea.disabled = true;
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
+  };
+
+  ws.onerror = (error) => {
+    console.error("WebSocket error:", error);
+    textarea.disabled = true;
+  };
+}
+
+connect();
 
 function updateTextarea() {
   const content = doc.getMap().getArray("content");

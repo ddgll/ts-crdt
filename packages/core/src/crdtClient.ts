@@ -1,4 +1,4 @@
-import { Doc, ServerMessage, YArray, YText, YMap } from "./index.js";
+import { Doc, ServerMessage, YArray, YText, YMap, CrdtEvent } from "./index.js";
 import { Logger, getLogger } from "./logger.js";
 
 /**
@@ -13,6 +13,7 @@ export interface MinimalClientWebSocket {
   addEventListener(type: "error", cb: (err: unknown) => void): void;
   addEventListener(type: "open", cb: () => void): void;
   removeEventListener?(type: "message", cb: (event: { data: unknown }) => void): void;
+  removeEventListener?(type: "open", cb: () => void): void;
 }
 
 /**
@@ -25,12 +26,30 @@ export class CrdtClient {
   private isApplyingRemote = false;
   private unsubscribeDocListener: (() => void) | null = null;
   private handleMessageRef: ((msgEvent: { data: unknown }) => void) | null = null;
+  private handleOpenRef: (() => void) | null = null;
   private messageListeners = new Set<(type: "snapshot" | "event" | "awareness", data: unknown) => void>();
   private logger: Logger;
+  /**
+   * Local events awaiting delivery to the server. This queue lives for the
+   * lifetime of the client (independent of any single socket) so that edits
+   * made while disconnected survive reconnection and are replayed once a socket
+   * is open again. Events are enqueued when observed and drained on flush.
+   */
+  private pendingLocalEvents: CrdtEvent[] = [];
 
   constructor(doc: Doc, logger: Logger = getLogger()) {
     this.doc = doc;
     this.logger = logger;
+
+    // Observe local changes for the entire lifetime of the client, not just
+    // while a socket is bound. Edits produced while offline are queued here and
+    // replayed on (re)connect instead of being silently dropped.
+    this.unsubscribeDocListener = this.doc.egWalker.onEvent((event, isLocal) => {
+      if (isLocal && !this.isApplyingRemote) {
+        this.enqueueLocalEvent(event);
+        this.flushPendingEvents();
+      }
+    });
   }
 
   /**
@@ -39,18 +58,9 @@ export class CrdtClient {
    */
   bind(socket: MinimalClientWebSocket): void {
     if (this.socket) {
-      throw new Error("CrdtClient is already bound to a socket. Call unbind() first.");
+      throw new Error("CrdtClient is already bound to a socket. Call unbind() first (or use rebind()).");
     }
     this.socket = socket;
-
-    // Listen to local changes in the document to replicate them to the server
-    this.unsubscribeDocListener = this.doc.egWalker.onEvent((event, isLocal) => {
-      if (isLocal && !this.isApplyingRemote) {
-        if (this.socket && this.socket.readyState === 1) { // OPEN
-          this.socket.send(JSON.stringify({ type: "event", data: event }));
-        }
-      }
-    });
 
     this.handleMessageRef = (msgEvent: { data: unknown }) => {
       try {
@@ -60,7 +70,31 @@ export class CrdtClient {
         this.isApplyingRemote = true;
 
         if (parsed.type === "snapshot") {
+          // A snapshot load is destructive: it replaces the whole graph with the
+          // server's state. Capture this replica's own events first so local-only
+          // edits (e.g. produced while disconnected) are not erased by the load.
+          const replicaId = this.doc.egWalker.getReplicaId();
+          const localEventsBefore = this.doc.egWalker.graph
+            .getAllEvents()
+            .filter((event) => event.replicaId === replicaId);
+
           this.doc.egWalker.loadStateSnapshot(parsed.data);
+
+          // Re-integrate any of our events the incoming snapshot doesn't yet
+          // contain, and re-queue them for delivery. This makes reconnection
+          // converge (offline edits survive) instead of dropping data.
+          const graph = this.doc.egWalker.graph;
+          const missing = localEventsBefore.filter(
+            (event) => graph.getEvent(event.id) === undefined,
+          );
+          if (missing.length > 0) {
+            this.doc.egWalker.integrateRemote(missing);
+            for (const event of missing) {
+              this.enqueueLocalEvent(event);
+            }
+            this.flushPendingEvents();
+          }
+
           this.notifyListeners("snapshot", parsed.data);
         } else if (parsed.type === "event") {
           const event = parsed.data;
@@ -84,21 +118,82 @@ export class CrdtClient {
     };
 
     socket.addEventListener("message", this.handleMessageRef);
+
+    // On (re)connect, replay everything the server may be missing. Some sockets
+    // are already OPEN by the time they are handed to bind() (e.g. on rebind of
+    // a pre-connected socket), in which case "open" has already fired, so flush
+    // eagerly as well.
+    this.handleOpenRef = () => this.flushPendingEvents();
+    socket.addEventListener("open", this.handleOpenRef);
+    if (socket.readyState === 1) { // OPEN
+      this.flushPendingEvents();
+    }
   }
 
   /**
-   * Unbinds the client from the WebSocket connection, cleaning up listeners.
+   * Unbinds the client from the WebSocket connection, cleaning up the socket
+   * listeners. The document listener and the pending-event queue intentionally
+   * survive so that edits made while unbound are replayed by a later bind()/
+   * rebind().
    */
   unbind(): void {
-    if (this.unsubscribeDocListener) {
-      this.unsubscribeDocListener();
-      this.unsubscribeDocListener = null;
-    }
-    if (this.socket && this.handleMessageRef && this.socket.removeEventListener) {
-      this.socket.removeEventListener("message", this.handleMessageRef);
+    if (this.socket && this.socket.removeEventListener) {
+      if (this.handleMessageRef) {
+        this.socket.removeEventListener("message", this.handleMessageRef);
+      }
+      if (this.handleOpenRef) {
+        this.socket.removeEventListener("open", this.handleOpenRef);
+      }
     }
     this.handleMessageRef = null;
+    this.handleOpenRef = null;
     this.socket = null;
+  }
+
+  /**
+   * Rebinds the client to a fresh socket after a disconnect. Prefer this over a
+   * manual unbind()/bind() pair for reconnection: the pending-event queue and
+   * the document listener are preserved, so local edits accumulated while the
+   * previous socket was down are replayed to the server once the new socket is
+   * open.
+   * @param socket The new WebSocket connection to bind to.
+   */
+  rebind(socket: MinimalClientWebSocket): void {
+    this.unbind();
+    this.bind(socket);
+  }
+
+  /**
+   * Queues a local event for delivery to the server, de-duplicating by event id
+   * so an event observed both via the document listener and via snapshot
+   * recovery is never sent twice.
+   */
+  private enqueueLocalEvent(event: CrdtEvent): void {
+    if (this.pendingLocalEvents.some((e) => e.id === event.id)) {
+      return;
+    }
+    this.pendingLocalEvents.push(event);
+  }
+
+  /**
+   * Sends all queued local events to the server if a socket is currently open,
+   * clearing the queue on send. If no socket is open the events stay queued and
+   * are retried on the next flush (e.g. when a socket opens or a snapshot is
+   * received on reconnect). Re-sending an event the server already has is safe:
+   * server-side integration is idempotent.
+   */
+  private flushPendingEvents(): void {
+    if (!this.socket || this.socket.readyState !== 1) { // not OPEN
+      return;
+    }
+    if (this.pendingLocalEvents.length === 0) {
+      return;
+    }
+    const toSend = this.pendingLocalEvents;
+    this.pendingLocalEvents = [];
+    for (const event of toSend) {
+      this.socket.send(JSON.stringify({ type: "event", data: event }));
+    }
   }
 
   /**
