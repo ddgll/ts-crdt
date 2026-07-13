@@ -51,10 +51,21 @@ export class Doc {
 
 	/**
 	 * Performs garbage collection on the document to clean up tombstones and free memory.
-	 * 
+	 *
 	 * WARNING: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization.
 	 * It should only be called when all clients are guaranteed to receive a synchronized snapshot to prevent permanent replica divergence.
-	 * 
+	 *
+	 * A tombstone is only safe to gc when it is both (a) causally stable — every
+	 * replica has observed it — AND (b) not referenced as an insertion anchor
+	 * (`afterId`) by any event that has not yet been folded into the same
+	 * snapshot. Tombstones are RGA anchors, so dropping one that a future insert
+	 * still points at would strand that insert (it would append at the end
+	 * instead of at its intended position). Compaction satisfies (b) because an
+	 * insert can only anchor to an item its author had visible, so any event
+	 * anchored to a tombstone is necessarily causally before that tombstone's
+	 * deletion and is folded into the snapshot alongside it (see PLAN_10 and
+	 * `server/tests/compactionGcAnchorLoss.test.ts`).
+	 *
 	 * @param force Must be explicitly set to true to execute garbage collection.
 	 */
 	gc(force: boolean = false) {

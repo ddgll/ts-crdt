@@ -358,10 +358,16 @@ export class YText {
 
 	/**
 	 * Performs garbage collection by cleanly splicing out characters marked as deleted.
-	 * 
+	 *
 	 * WARNING: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization.
 	 * It should only be called when all clients are guaranteed to receive a synchronized snapshot to prevent permanent replica divergence.
-	 * 
+	 *
+	 * Tombstoned characters double as RGA insertion anchors (`rgaInsertIndex`
+	 * resolves an insert's position by locating its `afterId` in `_data`). A
+	 * tombstone is therefore only safe to remove when it is causally stable AND no
+	 * not-yet-folded event still references it as an anchor; otherwise that event
+	 * would fall back to append-at-end and silently reorder text. See PLAN_10.
+	 *
 	 * @param force Must be explicitly set to true to execute garbage collection.
 	 */
 	gc(force: boolean = false) {
