@@ -243,7 +243,10 @@ export class YMap {
 	 * @returns A JSON representation of the map.
 	 */
 	toJSON(): Record<string, unknown> {
-		const obj: { [key: string]: unknown } = {};
+		// Use a null-prototype object so that assigning keys such as
+		// "__proto__" can never trigger a prototype setter (prototype
+		// pollution) regardless of what keys the map holds.
+		const obj: { [key: string]: unknown } = Object.create(null);
 		for (const [key, wrapper] of this._map.entries()) {
 			const value = wrapper.value;
 			if (value === undefined) continue;
@@ -265,7 +268,8 @@ export class YMap {
 	 * @returns A raw representation of the map.
 	 */
 	toSnapshot(): Record<string, unknown> {
-		const obj: { [key: string]: unknown } = {};
+		// Null-prototype object to avoid prototype pollution via crafted keys.
+		const obj: { [key: string]: unknown } = Object.create(null);
 		for (const [key, wrapper] of this._map.entries()) {
 			const value = wrapper.value;
 			let snapValue: unknown;

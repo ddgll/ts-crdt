@@ -131,11 +131,28 @@ export class EventGraphError extends Error {
 	}
 }
 
+/**
+ * Object keys that can trigger prototype pollution if written into a plain
+ * object literal. These are rejected as map keys and path segments at the
+ * validation boundary.
+ */
+const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
+ * Checks whether a string is a key that could pollute an object's prototype.
+ * @param key The candidate key or path segment.
+ * @returns True if the key is unsafe to use as an object key.
+ */
+function isDangerousKey(key: string): boolean {
+	return DANGEROUS_KEYS.has(key);
+}
+
 function isValidPath(path: unknown): path is (string | number)[] {
 	if (!Array.isArray(path)) return false;
-	return path.every(segment =>
-		typeof segment === "string" || typeof segment === "number"
-	);
+	return path.every(segment => {
+		if (typeof segment === "string") return !isDangerousKey(segment);
+		return typeof segment === "number";
+	});
 }
 
 function isRecord(obj: unknown): obj is Record<string, unknown> {
@@ -162,14 +179,12 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 		case MAP_SET_OP:
 			if (!isValidPath(op.path)) return false;
 			if (typeof op.key !== "string") return false;
-			if (op.key === "__proto__") return false;
-			if (op.key === "constructor") return false;
+			if (isDangerousKey(op.key)) return false;
 			break;
 		case MAP_DELETE_OP:
 			if (!isValidPath(op.path)) return false;
 			if (typeof op.key !== "string") return false;
-			if (op.key === "__proto__") return false;
-			if (op.key === "constructor") return false;
+			if (isDangerousKey(op.key)) return false;
 			break;
 		case ARRAY_INSERT_OP:
 			if (!isValidPath(op.path)) return false;
