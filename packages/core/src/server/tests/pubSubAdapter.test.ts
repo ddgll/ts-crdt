@@ -63,6 +63,44 @@ describe("InMemoryPubSubAdapter", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(received).toEqual([dummyEvent1]); // Still only has the first event
   });
+
+  it("should not throw or skip deliveries when a listener unsubscribes another mid-dispatch", async () => {
+    const pubSub = new InMemoryPubSubAdapter();
+    const receivedA: CrdtEvent[] = [];
+    const receivedB: CrdtEvent[] = [];
+    const receivedC: CrdtEvent[] = [];
+
+    // Listener A unsubscribes both B and C during dispatch. Because publish
+    // snapshots the listener set, every listener present at publish time must
+    // still receive the message and the iteration must not throw.
+    let unsubB: () => void = () => {};
+    let unsubC: () => void = () => {};
+
+    const unsubA = await pubSub.subscribe("room-1", (evt) => {
+      receivedA.push(evt);
+      unsubB();
+      unsubC();
+    });
+    unsubB = await pubSub.subscribe("room-1", (evt) => receivedB.push(evt));
+    unsubC = await pubSub.subscribe("room-1", (evt) => receivedC.push(evt));
+
+    await expect(pubSub.publish("room-1", dummyEvent1)).resolves.toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // All three listeners captured at publish time received the event.
+    expect(receivedA).toEqual([dummyEvent1]);
+    expect(receivedB).toEqual([dummyEvent1]);
+    expect(receivedC).toEqual([dummyEvent1]);
+
+    // The unsubscribes took effect for subsequent publishes.
+    await pubSub.publish("room-1", dummyEvent2);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(receivedA).toEqual([dummyEvent1, dummyEvent2]);
+    expect(receivedB).toEqual([dummyEvent1]);
+    expect(receivedC).toEqual([dummyEvent1]);
+
+    unsubA();
+  });
 });
 
 describe("NodeRedisPubSubAdapter", () => {
