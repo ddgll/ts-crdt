@@ -90,6 +90,7 @@ packages/
           loadStateSnapshot.test.ts
           pathTraversal.test.ts
           performanceRegression.test.ts
+          prototypePollution.test.ts
           rebuildBenchmark.test.ts
           replicaId.test.ts
           sustainedConcurrency.test.ts
@@ -97,6 +98,7 @@ packages/
           undoCausal.test.ts
           undoEdgeCases.test.ts
           undoRemote.test.ts
+          undoStackBound.test.ts
         egWalker.ts
         UndoManager.ts
       eventGraph/
@@ -120,9 +122,11 @@ packages/
           awareness.test.ts
           bufferedRepository.test.ts
           bufferedRepositoryFlushRace.test.ts
+          clusteredCompaction.test.ts
           compaction.test.ts
           compactionConcurrentDelete.test.ts
           compactionContinuation.test.ts
+          compactionGcAnchorLoss.test.ts
           connectionEdgeCases.test.ts
           crdtServer.test.ts
           loggerInjection.test.ts
@@ -1076,6 +1080,87 @@ describe("EgWalker replicaId validation", () => {
 });
 ````
 
+## File: packages/core/src/egWalker/tests/prototypePollution.test.ts
+````typescript
+import { describe, it, expect } from "vitest";
+import { Doc } from "../../crdtTypes/doc.js";
+import {
+	CrdtEvent,
+	isCrdtEvent,
+	MAP_SET_OP,
+} from "../../eventGraph/eventGraph.js";
+
+describe("prototype pollution hardening (PLAN_14)", () => {
+	it("isCrdtEvent rejects dangerous path segments and map keys", () => {
+		const base = {
+			id: "r1:1",
+			replicaId: "r1",
+			parents: [] as string[],
+		};
+		// Dangerous path segment.
+		expect(
+			isCrdtEvent({
+				...base,
+				op: { type: MAP_SET_OP, path: ["__proto__"], key: "k", value: "v" },
+			}),
+		).toBe(false);
+		// Dangerous map-set key (including "prototype", newly covered).
+		expect(
+			isCrdtEvent({
+				...base,
+				op: { type: MAP_SET_OP, path: [], key: "constructor", value: "v" },
+			}),
+		).toBe(false);
+		expect(
+			isCrdtEvent({
+				...base,
+				op: { type: MAP_SET_OP, path: [], key: "prototype", value: "v" },
+			}),
+		).toBe(false);
+		// A benign event is still accepted.
+		expect(
+			isCrdtEvent({
+				...base,
+				op: { type: MAP_SET_OP, path: ["a"], key: "b", value: "v" },
+			}),
+		).toBe(true);
+	});
+
+	it("a crafted __proto__ path segment does not pollute or throw on toJSON", () => {
+		const doc = new Doc();
+		const walker = doc.egWalker;
+
+		// A crafted event whose path traverses a "__proto__" segment. This
+		// bypasses the normal typed API (and the isCrdtEvent guard) and forces a
+		// YMap to hold the "__proto__" key.
+		const event: CrdtEvent = {
+			id: "r1:1",
+			replicaId: "r1",
+			parents: [],
+			op: { type: MAP_SET_OP, path: ["__proto__"], key: "polluted", value: "x" },
+		};
+
+		// Integrating and serializing must not throw...
+		expect(() => {
+			walker.integrateRemote([event]);
+			doc.toJSON();
+		}).not.toThrow();
+
+		// ...and must not pollute Object.prototype.
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+		expect(
+			(Object.prototype as Record<string, unknown>).polluted,
+		).toBeUndefined();
+
+		// The serialized output is a null-prototype object holding the segment as
+		// an own property rather than mutating the prototype chain.
+		const json = doc.toJSON() as Record<string, unknown>;
+		expect(Object.getPrototypeOf(json)).toBeNull();
+		expect(Object.prototype.hasOwnProperty.call(json, "__proto__")).toBe(true);
+	});
+});
+````
+
 ## File: packages/core/src/egWalker/tests/replicaId.test.ts
 ````typescript
 import { describe, it, expect } from "vitest";
@@ -1341,6 +1426,93 @@ describe("UndoManager causal correctness (PLAN_04)", () => {
 });
 ````
 
+## File: packages/core/src/egWalker/tests/undoStackBound.test.ts
+````typescript
+import { describe, it, expect } from "vitest";
+import { Doc } from "../../crdtTypes/doc.js";
+import { CrdtEvent } from "../../eventGraph/eventGraph.js";
+
+/**
+ * PLAN_13.2 — the engine's undo stack is a bounded cache used only to accelerate
+ * the incremental suffix-rebuild. Capping it must (a) keep retained closures
+ * within the limit for a long-lived client and (b) never change the converged
+ * document state, because a missing undo transparently falls back to a full
+ * rebuild from the sorted event list.
+ */
+describe("PLAN_13.2 — bounded undo stack with rebuild fallback", () => {
+	it("keeps the undo stack within its cap over a long session", () => {
+		const doc = new Doc("rep-cap");
+		doc.egWalker.setUndoStackLimit(16);
+
+		for (let i = 0; i < 500; i++) {
+			doc.getMap().set(`k${i}`, i);
+			expect(doc.egWalker.getUndoStackSize()).toBeLessThanOrEqual(16);
+		}
+
+		// All 500 keys are present even though only the last <=16 undo closures
+		// are retained — undo closures are not needed to read current state.
+		expect(doc.getMap().get("k0")).toBe(0);
+		expect(doc.getMap().get("k499")).toBe(499);
+		expect(doc.egWalker.getUndoStackSize()).toBeLessThanOrEqual(16);
+	});
+
+	it("converges under concurrency despite a tiny cap forcing rebuild fallbacks", () => {
+		// A tiny cap guarantees the incremental undo path frequently cannot find
+		// a needed undo, exercising the full-rebuild fallback in _ingestEvents.
+		const a = new Doc("rep-a");
+		const b = new Doc("rep-b");
+		a.egWalker.setUndoStackLimit(4);
+		b.egWalker.setUndoStackLimit(4);
+
+		// A reference replica with the default (large) cap always uses the fast
+		// incremental path; its final state is the correctness oracle.
+		const ref = new Doc("rep-ref");
+
+		let aVersion = a.egWalker.getVersion();
+		let bVersion = b.egWalker.getVersion();
+
+		const rounds = 200;
+		for (let i = 0; i < rounds; i++) {
+			a.getMap().set(`a${i}`, i);
+			b.getMap().set(`b${i}`, i);
+
+			const aNew: CrdtEvent[] = a.egWalker.graph.getChangesSince(aVersion);
+			const bNew: CrdtEvent[] = b.egWalker.graph.getChangesSince(bVersion);
+
+			b.egWalker.integrateRemote(aNew);
+			a.egWalker.integrateRemote(bNew);
+			ref.egWalker.integrateRemote([...aNew, ...bNew]);
+
+			aVersion = a.egWalker.getVersion();
+			bVersion = b.egWalker.getVersion();
+
+			expect(a.egWalker.getUndoStackSize()).toBeLessThanOrEqual(4);
+			expect(b.egWalker.getUndoStackSize()).toBeLessThanOrEqual(4);
+		}
+
+		// The capped replicas converge with each other and with the reference,
+		// proving the rebuild fallback reconstructs identical state.
+		expect(a.getMap().toJSON()).toEqual(b.getMap().toJSON());
+		expect(a.getMap().toJSON()).toEqual(ref.getMap().toJSON());
+	});
+
+	it("setUndoStackLimit trims immediately and rejects invalid limits", () => {
+		const doc = new Doc("rep-trim");
+		for (let i = 0; i < 50; i++) {
+			doc.getMap().set(`k${i}`, i);
+		}
+		expect(doc.egWalker.getUndoStackSize()).toBe(50);
+
+		doc.egWalker.setUndoStackLimit(10);
+		expect(doc.egWalker.getUndoStackSize()).toBe(10);
+
+		expect(() => doc.egWalker.setUndoStackLimit(0)).toThrow();
+		expect(() => doc.egWalker.setUndoStackLimit(-1)).toThrow();
+		expect(() => doc.egWalker.setUndoStackLimit(1.5)).toThrow();
+	});
+});
+````
+
 ## File: packages/core/src/eventGraph/tests/lastCriticalVersionLinear.test.ts
 ````typescript
 import { describe, it, expect } from "vitest";
@@ -1555,6 +1727,183 @@ describe("PLAN_07.3 — BufferedRepository has no gap during flush", () => {
 		const final = await buffered.getEvents();
 		expect(final.map((e) => e.id)).toEqual(["1"]);
 	});
+});
+````
+
+## File: packages/core/src/server/tests/clusteredCompaction.test.ts
+````typescript
+import { describe, it, expect } from "vitest";
+import { Doc } from "../../crdtTypes/doc.js";
+import { CrdtServer, Repository, MinimalWebSocket } from "../crdtServer.js";
+import { InMemoryPubSubAdapter } from "../pubSubAdapter.js";
+import { CrdtEvent, SNAPSHOT_OP } from "../../index.js";
+
+/**
+ * Regression test for PLAN_08 — compaction & server-minted event ids must be
+ * cluster-safe. Two CrdtServer instances share one repository and one
+ * InMemoryPubSubAdapter. When one compacts it (a) mints a process-unique
+ * snapshot id (no cross-process collision → no silent divergence) and (b)
+ * publishes the snapshot so the peer rebuilds from it, leaving the shared repo
+ * replayable.
+ */
+describe("Clustered compaction over pub/sub", () => {
+  /**
+   * A mock socket that mirrors the server's snapshot/event broadcasts into a
+   * bound client Doc, so the client stays in sync and can build new events on
+   * top of the server's (possibly compacted) state.
+   */
+  function makeClient(clientDoc: Doc) {
+    let messageCallback: (data: string) => void = () => {};
+    const socket = {
+      readyState: 1,
+      send: (msgString: string) => {
+        const msg = JSON.parse(msgString);
+        if (msg.type === "snapshot") {
+          clientDoc.egWalker.loadStateSnapshot(msg.data);
+        } else if (msg.type === "event") {
+          if (!clientDoc.egWalker.graph.getEvent(msg.data.id)) {
+            clientDoc.egWalker.integrateRemote([msg.data]);
+          }
+        }
+      },
+      on: (event: string, cb: (data: string) => void) => {
+        if (event === "message") messageCallback = cb;
+      },
+    } as unknown as MinimalWebSocket;
+
+    return {
+      socket,
+      doc: clientDoc,
+      send: (message: unknown) => messageCallback(JSON.stringify(message)),
+    };
+  }
+
+  const tick = (ms = 15) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("keeps two servers converged and the repository replayable when one compacts", async () => {
+    // One repository shared by the whole cluster.
+    let stored: CrdtEvent[] = [];
+    const repo: Repository = {
+      getEvents: async () => [...stored],
+      saveEvents: async (events) => {
+        stored.push(...events);
+      },
+      clearEvents: async () => {
+        stored = [];
+      },
+    };
+
+    const pubSub = new InMemoryPubSubAdapter();
+
+    // Only serverA compacts (it has the threshold). serverB serves the same
+    // room and must converge purely from what it receives over pub/sub.
+    const serverA = new CrdtServer("cluster-room", repo, { pubSub, compactionThreshold: 3 });
+    await serverA.initialize();
+    const serverB = new CrdtServer("cluster-room", repo, { pubSub });
+    await serverB.initialize();
+
+    const clientA = makeClient(new Doc("client-A"));
+    await serverA.handleConnection(clientA.socket);
+    const clientB = makeClient(new Doc("client-B"));
+    await serverB.handleConnection(clientB.socket);
+
+    // clientA drives edits into serverA. Each set becomes one event that
+    // serverA persists + publishes; serverB integrates it from pub/sub. The
+    // 3rd event trips compaction on serverA.
+    for (let i = 1; i <= 5; i++) {
+      const before = clientA.doc.egWalker.getVersion();
+      clientA.doc.getMap().set(`key${i}`, `val${i}`);
+      const delta = clientA.doc.egWalker.graph.getChangesSince(before);
+      for (const event of delta) {
+        clientA.send({ type: "event", data: event });
+      }
+      await tick();
+    }
+
+    // Let background compaction I/O and pub/sub delivery settle.
+    await tick(50);
+    const compactionPromise = (serverA as unknown as { compactionPromise: Promise<void> | null })
+      .compactionPromise;
+    if (compactionPromise) await compactionPromise;
+    await tick(30);
+
+    // 1. serverA actually compacted: exactly one snapshot root remains.
+    const snapshotEvents = serverA
+      .getDoc()
+      .egWalker.graph.getAllEvents()
+      .filter((e) => e.op.type === SNAPSHOT_OP);
+    expect(snapshotEvents.length).toBe(1);
+    const snapshotId = snapshotEvents[0].id;
+
+    // The snapshot id is process-unique (carries a per-instance suffix), not the
+    // colliding `server-cluster-room:0` the old code minted on every process.
+    expect(snapshotId.startsWith("server-cluster-room-")).toBe(true);
+    expect(snapshotId).not.toBe("server-cluster-room:0");
+
+    // 2. serverB rebuilt from the SAME snapshot event id (proves no silent
+    //    divergence via colliding ids) and both docs converge.
+    expect(serverB.getDoc().egWalker.graph.getEvent(snapshotId)).toBeDefined();
+    for (let i = 1; i <= 5; i++) {
+      expect(serverA.getDoc().getMap().get(`key${i}`)).toBe(`val${i}`);
+      expect(serverB.getDoc().getMap().get(`key${i}`)).toBe(`val${i}`);
+    }
+    expect(JSON.stringify(serverB.getDoc().getSnapshot())).toBe(
+      JSON.stringify(serverA.getDoc().getSnapshot())
+    );
+
+    // 3. The shared repository stays replayable: a fresh process rebuilds the
+    //    exact same document from what is persisted (snapshot + post-snapshot
+    //    events, all parents present).
+    const serverC = new CrdtServer("cluster-room", repo);
+    await serverC.initialize();
+    for (let i = 1; i <= 5; i++) {
+      expect(serverC.getDoc().getMap().get(`key${i}`)).toBe(`val${i}`);
+    }
+    expect(JSON.stringify(serverC.getDoc().getSnapshot())).toBe(
+      JSON.stringify(serverA.getDoc().getSnapshot())
+    );
+  });
+
+  it("mints process-unique snapshot replica ids across instances of the same room", async () => {
+    // Two independent single-process rooms (no shared repo) compacting the same
+    // logical content must still mint different snapshot ids — the property that
+    // makes clustered compaction safe.
+    const makeRepo = (): Repository => {
+      let stored: CrdtEvent[] = [];
+      return {
+        getEvents: async () => [...stored],
+        saveEvents: async (events) => {
+          stored.push(...events);
+        },
+        clearEvents: async () => {
+          stored = [];
+        },
+      };
+    };
+
+    const snapshotIdFor = async (server: CrdtServer) => {
+      server.getDoc().getMap().set("k", "v");
+      await server.compact();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const snap = server
+        .getDoc()
+        .egWalker.graph.getAllEvents()
+        .find((e) => e.op.type === SNAPSHOT_OP);
+      return snap?.id;
+    };
+
+    const serverA = new CrdtServer("same-room", makeRepo());
+    await serverA.initialize();
+    const serverB = new CrdtServer("same-room", makeRepo());
+    await serverB.initialize();
+
+    const idA = await snapshotIdFor(serverA);
+    const idB = await snapshotIdFor(serverB);
+
+    expect(idA).toBeDefined();
+    expect(idB).toBeDefined();
+    expect(idA).not.toBe(idB);
+  });
 });
 ````
 
@@ -1774,6 +2123,191 @@ describe("Post-compaction operations", () => {
             expect(serverDoc.getMap().get(`key-${i}`)).toBe(`val-${i}`);
         }
     });
+});
+````
+
+## File: packages/core/src/server/tests/compactionGcAnchorLoss.test.ts
+````typescript
+import { describe, it, expect } from "vitest";
+import { Doc } from "../../crdtTypes/doc.js";
+import { CrdtServer, Repository } from "../crdtServer.js";
+import { CrdtEvent } from "../../eventGraph/eventGraph.js";
+
+function makeRepo() {
+	let saved: CrdtEvent[] = [];
+	const repo: Repository = {
+		getEvents: async () => saved,
+		saveEvents: async (events) => { saved.push(...events); },
+		clearEvents: async () => { saved = []; },
+	};
+	return repo;
+}
+
+/**
+ * Recursively walks a state snapshot collecting every RGA item id it contains,
+ * so tests can assert whether an insert anchor still resolves after gc.
+ */
+function collectItemIds(node: unknown): Set<string> {
+	const ids = new Set<string>();
+	const visit = (value: unknown) => {
+		if (Array.isArray(value)) {
+			for (const el of value) visit(el);
+			return;
+		}
+		if (value && typeof value === "object") {
+			const rec = value as Record<string, unknown>;
+			if (typeof rec.id === "string") ids.add(rec.id);
+			for (const key of Object.keys(rec)) visit(rec[key]);
+		}
+	};
+	visit(node);
+	return ids;
+}
+
+/**
+ * Builds the PLAN_10 stress scenario and returns the pieces needed to drive both
+ * a compacted server and a non-compacted reference.
+ *
+ * Shape (content starts as [A, X, B]):
+ *   - branch `del`: deletes X (authored while X is visible)
+ *   - branch `ins`: inserts P *after X* (authored while X is visible, so its op
+ *     anchors afterId = X's item id)
+ *   - `merge`: integrates both branches then inserts M — a single articulation
+ *     point whose ancestor set includes delete-X, so X is a tombstone at the
+ *     critical version and gets gc'd out of the snapshot
+ *   - `rA`, `rB`: two concurrent inserts AFTER the merge, so the critical version
+ *     settles on the merge event and genuine remaining events exist
+ */
+async function buildScenario(roomId: string) {
+	const server = new CrdtServer(roomId, makeRepo());
+	await server.initialize();
+
+	const c1 = new Doc("c1");
+	c1.egWalker.integrateRemote(server.getDoc().egWalker.graph.getAllEvents());
+	c1.getMap().getArray("content").insert(0, ["A", "X", "B"]);
+	server.getDoc().egWalker.integrateRemote(c1.egWalker.graph.getAllEvents());
+	const baseEvents = server.getDoc().egWalker.graph.getAllEvents();
+
+	const del = new Doc("del");
+	del.egWalker.integrateRemote(baseEvents);
+	const delBase = del.egWalker.getVersion();
+	del.getMap().getArray("content").delete(1, 1);
+	const delNew = del.egWalker.graph.getChangesSince(delBase);
+
+	const ins = new Doc("ins");
+	ins.egWalker.integrateRemote(baseEvents);
+	const insBase = ins.egWalker.getVersion();
+	ins.getMap().getArray("content").insert(2, ["P"]); // index 2 → afterId = X
+	const insNew = ins.egWalker.graph.getChangesSince(insBase);
+
+	// The id X is anchored to (its item id), so tests can check gc removed it.
+	const insertAfterId =
+		insNew[0]?.op.type === "array-insert" ? insNew[0].op.afterId : null;
+
+	const merge = new Doc("merge");
+	merge.egWalker.integrateRemote([...baseEvents, ...delNew, ...insNew]);
+	const mergeBase = merge.egWalker.getVersion();
+	merge.getMap().getArray("content").insert(0, ["M"]);
+	const mergeNew = merge.egWalker.graph.getChangesSince(mergeBase);
+
+	const afterMerge = [...baseEvents, ...delNew, ...insNew, ...mergeNew];
+
+	const rA = new Doc("rA");
+	rA.egWalker.integrateRemote(afterMerge);
+	const rABase = rA.egWalker.getVersion();
+	rA.getMap().getArray("content").insert(0, ["Y"]);
+	const rANew = rA.egWalker.graph.getChangesSince(rABase);
+
+	const rB = new Doc("rB");
+	rB.egWalker.integrateRemote(afterMerge);
+	const rBBase = rB.egWalker.getVersion();
+	rB.getMap().getArray("content").insert(0, ["Z"]);
+	const rBNew = rB.egWalker.graph.getChangesSince(rBBase);
+
+	const allNew = [...delNew, ...insNew, ...mergeNew, ...rANew, ...rBNew];
+
+	// Reference: integrate everything with NO compaction.
+	const reference = new Doc("ref");
+	reference.egWalker.integrateRemote([...baseEvents, ...allNew]);
+
+	return { server, baseEvents, allNew, reference, insertAfterId };
+}
+
+/**
+ * PLAN_10 — GC during compaction can drop tombstones still needed as RGA anchors.
+ *
+ * The concern: compaction rebuilds state at the critical version and calls
+ * `gc(true)`, permanently removing tombstones from the snapshot. Tombstones are
+ * RGA insertion anchors; if a *remaining* event (kept because it is concurrent
+ * with / after the critical version) anchors `afterId` at a character deleted
+ * at-or-before the critical version and gc'd out of the snapshot, the anchor is
+ * gone and `rgaInsertIndex` falls back to append-at-end — silently reordering.
+ *
+ * These tests establish that the condition cannot arise through the public API.
+ * The index-based insert only ever anchors to a *visible* predecessor, so an
+ * insert with `afterId = X` must have been authored on a replica that had not
+ * yet seen X's deletion (the insert is concurrent with the delete). For X to be
+ * a tombstone in the snapshot, delete-X must be an ancestor of the critical
+ * version `c`; but a remaining event is a strict descendant of `c`, hence a
+ * descendant of delete-X — so it would have seen the delete and could not have
+ * anchored to X. The two requirements are mutually exclusive. These stay as
+ * regression/documentation tests.
+ */
+describe("PLAN_10 — compaction gc does not orphan RGA anchors", () => {
+	it("compaction that gc's a folded tombstone still converges to the non-compacted result", async () => {
+		const { server, allNew, reference, insertAfterId } =
+			await buildScenario("gc-anchor-room");
+		const expected = reference.getMap().getArray("content").toJSON();
+
+		server.getDoc().egWalker.integrateRemote(allNew);
+		await server.compact();
+
+		// The compaction must have folded history (a snapshot event exists) and
+		// left genuine remaining events, or the test would prove nothing.
+		const events = server.getDoc().egWalker.graph.getAllEvents();
+		expect(events.some((e) => e.op.type === "snapshot")).toBe(true);
+		expect(events.some((e) => e.op.type !== "snapshot")).toBe(true);
+
+		// gc actually removed the deleted anchor X from the snapshot state — this
+		// is the exact tombstone PLAN_10 feared losing.
+		const snapshotIds = collectItemIds(server.getDoc().egWalker.getStateSnapshot());
+		expect(insertAfterId).not.toBeNull();
+		expect(snapshotIds.has(insertAfterId!)).toBe(false);
+
+		// Despite X being gone, the compacted server converges to the exact same
+		// content as the non-compacted reference: no silent reordering.
+		expect(server.getDoc().getMap().getArray("content").toJSON()).toEqual(expected);
+
+		// A fresh client loading only the post-compaction snapshot also converges.
+		const late = new Doc("late");
+		late.egWalker.loadStateSnapshot(server.getDoc().egWalker.getStateSnapshot());
+		expect(late.getMap().getArray("content").toJSON()).toEqual(expected);
+	});
+
+	it("no remaining event anchors afterId at an item absent from the post-gc snapshot", async () => {
+		const { server, allNew } = await buildScenario("gc-anchor-room-2");
+
+		server.getDoc().egWalker.integrateRemote(allNew);
+		await server.compact();
+
+		// Every id present in the post-compaction snapshot (snapshots preserve
+		// surviving items via toSnapshot; gc during compaction removes tombstones).
+		const presentIds = collectItemIds(server.getDoc().egWalker.getStateSnapshot());
+
+		const remaining = server
+			.getDoc()
+			.egWalker.graph.getAllEvents()
+			.filter((e) => e.op.type !== "snapshot");
+		expect(remaining.length).toBeGreaterThan(0);
+
+		// The core invariant: no remaining insert op anchors to an id missing from
+		// the snapshot. If this ever fails, gc dropped a still-referenced anchor.
+		for (const ev of remaining) {
+			if (ev.op.type === "array-insert" && ev.op.afterId !== null) {
+				expect(presentIds.has(ev.op.afterId)).toBe(true);
+			}
+		}
+	});
 });
 ````
 
@@ -3300,53 +3834,6 @@ describe("Large Document Load Benchmarks", () => {
 });
 ````
 
-## File: packages/core/src/benchmarks/memoryLeak.bench.ts
-````typescript
-import { bench, describe } from 'vitest';
-import { CrdtServer, Repository, MinimalWebSocket } from "../server/crdtServer.js";
-import { CrdtEvent } from "../eventGraph/eventGraph.js";
-
-class MockRepository implements Repository {
-  events: CrdtEvent[] = [];
-  async getEvents(): Promise<CrdtEvent[]> { return this.events; }
-  async saveEvents(events: CrdtEvent[]): Promise<void> { this.events.push(...events); }
-  async clearEvents(): Promise<void> { this.events = []; }
-}
-
-class MockWebSocket implements MinimalWebSocket {
-  readyState = 1;
-  send() {}
-  close() {
-    this.readyState = 3;
-    this.emit("close");
-  }
-  
-  private listeners: Record<string, ((arg?: unknown) => void)[]> = { message: [], close: [], error: [] };
-  
-  on(event: string, cb: (arg?: unknown) => void) {
-    this.listeners[event].push(cb);
-  }
-  
-  emit(event: string, arg?: unknown) {
-    this.listeners[event].forEach(cb => cb(arg));
-  }
-}
-
-describe("Memory Leak Benchmarks", () => {
-  bench("Connect, sync, disconnect 1000 clients", async () => {
-    const repo = new MockRepository();
-    const server = new CrdtServer("room-mem", repo);
-    await server.initialize();
-
-    for (let i = 0; i < 1000; i++) {
-      const ws = new MockWebSocket();
-      await server.handleConnection(ws);
-      ws.close();
-    }
-  }, { time: 5000, iterations: 10 });
-});
-````
-
 ## File: packages/core/src/crdtTypes/tests/docExtended.test.ts
 ````typescript
 import { describe, it, expect, vi } from 'vitest';
@@ -4140,190 +4627,6 @@ describe("Connection Edge Cases", () => {
     await new Promise(resolve => setTimeout(resolve, 10));
 
     expect(repo.events.length).toBe(initialEvents); // Should not have saved any events
-  });
-});
-````
-
-## File: packages/core/src/server/tests/pubSubAdapter.test.ts
-````typescript
-import { describe, it, expect, vi } from 'vitest';
-import { InMemoryPubSubAdapter } from "../pubSubAdapter.js";
-import { NodeRedisPubSubAdapter, IoRedisPubSubAdapter, IoRedisOnMessageListener } from "../redisPubSubAdapter.js";
-import { CrdtEvent } from "../../index.js";
-
-const dummyEvent1 = { id: "1:1", replicaId: "1", parents: [], op: { type: "array-insert", path: ["content"], index: 0, values: ["a"] } } as unknown as CrdtEvent;
-const dummyEvent2 = { id: "2:1", replicaId: "2", parents: [], op: { type: "array-insert", path: ["content"], index: 1, values: ["b"] } } as unknown as CrdtEvent;
-
-describe("InMemoryPubSubAdapter", () => {
-  it("should broadcast events to all subscribers in the same room", async () => {
-    const pubSub = new InMemoryPubSubAdapter();
-    const receivedEvents1: CrdtEvent[] = [];
-    const receivedEvents2: CrdtEvent[] = [];
-
-    const unsub1 = await pubSub.subscribe("room-1", (evt) => receivedEvents1.push(evt));
-    const unsub2 = await pubSub.subscribe("room-1", (evt) => receivedEvents2.push(evt));
-
-    await pubSub.publish("room-1", dummyEvent1);
-
-    // Wait a tick for microtask queue
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(receivedEvents1).toEqual([dummyEvent1]);
-    expect(receivedEvents2).toEqual([dummyEvent1]);
-
-    unsub1();
-    unsub2();
-  });
-
-  it("should isolate events by roomId", async () => {
-    const pubSub = new InMemoryPubSubAdapter();
-    const receivedEventsRoom1: CrdtEvent[] = [];
-    const receivedEventsRoom2: CrdtEvent[] = [];
-
-    const unsub1 = await pubSub.subscribe("room-1", (evt) => receivedEventsRoom1.push(evt));
-    const unsub2 = await pubSub.subscribe("room-2", (evt) => receivedEventsRoom2.push(evt));
-
-    await pubSub.publish("room-1", dummyEvent1);
-    await pubSub.publish("room-2", dummyEvent2);
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    expect(receivedEventsRoom1).toEqual([dummyEvent1]);
-    expect(receivedEventsRoom2).toEqual([dummyEvent2]);
-
-    unsub1();
-    unsub2();
-  });
-
-  it("should stop receiving events after unsubscribing", async () => {
-    const pubSub = new InMemoryPubSubAdapter();
-    const received: CrdtEvent[] = [];
-
-    const unsub = await pubSub.subscribe("room-1", (evt) => received.push(evt));
-
-    await pubSub.publish("room-1", dummyEvent1);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(received).toEqual([dummyEvent1]);
-
-    unsub();
-
-    await pubSub.publish("room-1", dummyEvent2);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(received).toEqual([dummyEvent1]); // Still only has the first event
-  });
-});
-
-describe("NodeRedisPubSubAdapter", () => {
-  it("should publish correctly to Redis", async () => {
-    const mockPubClient = {
-      publish: vi.fn().mockResolvedValue(1),
-    };
-    const mockSubClient = {
-      subscribe: vi.fn().mockResolvedValue("OK"),
-      unsubscribe: vi.fn().mockResolvedValue("OK"),
-    };
-
-    const adapter = new NodeRedisPubSubAdapter(mockPubClient, mockSubClient);
-    await adapter.publish("my-room", dummyEvent1);
-
-    expect(mockPubClient.publish).toHaveBeenCalledWith("room:my-room", JSON.stringify(dummyEvent1));
-  });
-
-  it("should subscribe and unsubscribe correctly with node-redis callback style", async () => {
-    const mockPubClient = {
-      publish: vi.fn(),
-    };
-
-    let registeredCallback: ((message: string) => void) | undefined;
-    const mockSubClient = {
-      subscribe: vi.fn().mockImplementation(async (channel: string, cb: (message: string) => void) => {
-        registeredCallback = cb;
-        return "OK";
-      }),
-      unsubscribe: vi.fn().mockResolvedValue("OK"),
-    };
-
-    const adapter = new NodeRedisPubSubAdapter(mockPubClient, mockSubClient);
-    const received: CrdtEvent[] = [];
-
-    const unsub = await adapter.subscribe("my-room", (evt) => received.push(evt));
-
-    expect(mockSubClient.subscribe).toHaveBeenCalledWith("room:my-room", expect.any(Function));
-    expect(registeredCallback).toBeDefined();
-
-    // Trigger mock event message
-    registeredCallback!(JSON.stringify(dummyEvent1));
-    expect(received).toEqual([dummyEvent1]);
-
-    // Clean up
-    await unsub();
-    expect(mockSubClient.unsubscribe).toHaveBeenCalledWith("room:my-room");
-  });
-});
-
-describe("IoRedisPubSubAdapter", () => {
-  it("should publish correctly to Redis", async () => {
-    const mockPubClient = {
-      publish: vi.fn().mockResolvedValue(1),
-    };
-    const mockSubClient = {
-      subscribe: vi.fn().mockResolvedValue("OK"),
-      unsubscribe: vi.fn().mockResolvedValue("OK"),
-      on: vi.fn(),
-      off: vi.fn(),
-    };
-
-    const adapter = new IoRedisPubSubAdapter(mockPubClient, mockSubClient);
-    await adapter.publish("my-room", dummyEvent1);
-
-    expect(mockPubClient.publish).toHaveBeenCalledWith("room:my-room", JSON.stringify(dummyEvent1));
-  });
-
-  it("should subscribe and unsubscribe correctly with ioredis event emitter style", async () => {
-    const mockPubClient = {
-      publish: vi.fn(),
-    };
-    
-    // Simulate event emitter for ioredis
-    const listeners: Record<string, IoRedisOnMessageListener[]> = {};
-    const mockSubClient = {
-      subscribe: vi.fn().mockResolvedValue("OK"),
-      unsubscribe: vi.fn().mockResolvedValue("OK"),
-      on: vi.fn((event: string, cb: IoRedisOnMessageListener) => {
-        if (!listeners[event]) listeners[event] = [];
-        listeners[event].push(cb);
-      }),
-      off: vi.fn((event: string, cb: IoRedisOnMessageListener) => {
-        if (listeners[event]) {
-          listeners[event] = listeners[event].filter((fn) => fn !== cb);
-        }
-      }),
-    };
-
-    const adapter = new IoRedisPubSubAdapter(mockPubClient, mockSubClient);
-    const received: CrdtEvent[] = [];
-
-    const unsub = await adapter.subscribe("my-room", (evt) => received.push(evt));
-
-    expect(mockSubClient.subscribe).toHaveBeenCalledWith("room:my-room");
-    expect(mockSubClient.on).toHaveBeenCalledWith("message", expect.any(Function));
-
-    // Simulate Redis message event
-    const messageListener = listeners["message"]?.[0];
-    expect(messageListener).toBeDefined();
-
-    // Send correct channel and message
-    messageListener("room:my-room", JSON.stringify(dummyEvent1));
-    expect(received).toEqual([dummyEvent1]);
-
-    // Send mismatching channel
-    messageListener("room:other-room", JSON.stringify(dummyEvent2));
-    expect(received).toEqual([dummyEvent1]); // No change
-
-    // Clean up
-    await unsub();
-    expect(mockSubClient.unsubscribe).toHaveBeenCalledWith("room:my-room");
-    expect(mockSubClient.off).toHaveBeenCalledWith("message", messageListener);
   });
 });
 ````
@@ -5198,6 +5501,112 @@ jobs:
       run: pnpm test
     - name: Benchmark
       run: npx tsx benchmarks/run.ts || true
+````
+
+## File: packages/core/src/benchmarks/memoryLeak.bench.ts
+````typescript
+import { bench, describe } from 'vitest';
+import { CrdtServer, Repository, MinimalWebSocket } from "../server/crdtServer.js";
+import { CrdtEvent } from "../eventGraph/eventGraph.js";
+import { Doc } from "../crdtTypes/doc.js";
+
+class MockRepository implements Repository {
+  events: CrdtEvent[] = [];
+  async getEvents(): Promise<CrdtEvent[]> { return this.events; }
+  async saveEvents(events: CrdtEvent[]): Promise<void> { this.events.push(...events); }
+  async clearEvents(): Promise<void> { this.events = []; }
+}
+
+class MockWebSocket implements MinimalWebSocket {
+  readyState = 1;
+  send() {}
+  close() {
+    this.readyState = 3;
+    this.emit("close");
+  }
+  
+  private listeners: Record<string, ((arg?: unknown) => void)[]> = { message: [], close: [], error: [] };
+  
+  on(event: string, cb: (arg?: unknown) => void) {
+    this.listeners[event].push(cb);
+  }
+  
+  emit(event: string, arg?: unknown) {
+    this.listeners[event].forEach(cb => cb(arg));
+  }
+}
+
+describe("Memory Leak Benchmarks", () => {
+  bench("Connect, sync, disconnect 1000 clients", async () => {
+    const repo = new MockRepository();
+    const server = new CrdtServer("room-mem", repo);
+    await server.initialize();
+
+    for (let i = 0; i < 1000; i++) {
+      const ws = new MockWebSocket();
+      await server.handleConnection(ws);
+      ws.close();
+    }
+  }, { time: 5000, iterations: 10 });
+});
+
+/**
+ * PLAN_13.1 — single long-lived client with NO snapshot reset.
+ *
+ * A client that stays connected to an active document accumulates event-graph
+ * entries and undo closures with no server compaction to reset it. This drives
+ * one {@link Doc} through many interleaved local + remote ops (keys are reused
+ * so the *document* stays O(1) and the measured growth isolates the event graph
+ * and undo cache rather than user data). The undo stack is now bounded, so its
+ * contribution is capped; the event graph is not (Action 4, deferred).
+ *
+ * `runNoResetSession` is exported so the accompanying heap-growth measurement
+ * script can quantify growth outside the bench harness.
+ */
+export function runNoResetSession(n: number, undoStackLimit?: number): Doc {
+  const local = new Doc("bench-local");
+  const remote = new Doc("bench-remote");
+  if (undoStackLimit !== undefined) {
+    local.egWalker.setUndoStackLimit(undoStackLimit);
+  }
+
+  let localVersion = local.egWalker.getVersion();
+  let remoteVersion = remote.egWalker.getVersion();
+
+  for (let i = 0; i < n; i++) {
+    // Local edit and a concurrent remote edit, exchanged each round so the
+    // client's graph is continuously extended with concurrent suffixes.
+    local.getMap().set("localCounter", i);
+    remote.getMap().set("remoteCounter", i);
+
+    const localNew: CrdtEvent[] = local.egWalker.graph.getChangesSince(localVersion);
+    const remoteNew: CrdtEvent[] = remote.egWalker.graph.getChangesSince(remoteVersion);
+
+    local.egWalker.integrateRemote(remoteNew);
+    remote.egWalker.integrateRemote(localNew);
+
+    localVersion = local.egWalker.getVersion();
+    remoteVersion = remote.egWalker.getVersion();
+  }
+
+  return local;
+}
+
+describe("PLAN_13 — long-lived client (no snapshot reset)", () => {
+  const N = 5_000;
+
+  // Bounded undo stack (default cap): the retained undo cache stops growing
+  // once the cap is reached even as the session runs indefinitely.
+  bench("single client, bounded undo stack", () => {
+    runNoResetSession(N);
+  }, { time: 3000, iterations: 5 });
+
+  // Effectively-unbounded undo stack for comparison: one undo closure is
+  // retained per applied event for the whole session.
+  bench("single client, unbounded undo stack", () => {
+    runNoResetSession(N, Number.MAX_SAFE_INTEGER);
+  }, { time: 3000, iterations: 5 });
+});
 ````
 
 ## File: packages/core/src/crdtTypes/tests/yArray.test.ts
@@ -6281,61 +6690,226 @@ describe('Version Management', () => {
 });
 ````
 
-## File: packages/core/src/server/pubSubAdapter.ts
+## File: packages/core/src/server/tests/pubSubAdapter.test.ts
 ````typescript
-import { ServerMessage } from "../index.js";
+import { describe, it, expect, vi } from 'vitest';
+import { InMemoryPubSubAdapter } from "../pubSubAdapter.js";
+import { NodeRedisPubSubAdapter, IoRedisPubSubAdapter, IoRedisOnMessageListener } from "../redisPubSubAdapter.js";
+import { CrdtEvent } from "../../index.js";
 
-/**
- * Interface representing a publish/subscribe adapter to replicate events across instances.
- */
-export interface PubSubAdapter {
-  /**
-   * Publishes an event to a specific channel/room.
-   */
-  publish(roomId: string, message: ServerMessage): Promise<void>;
+const dummyEvent1 = { id: "1:1", replicaId: "1", parents: [], op: { type: "array-insert", path: ["content"], index: 0, values: ["a"] } } as unknown as CrdtEvent;
+const dummyEvent2 = { id: "2:1", replicaId: "2", parents: [], op: { type: "array-insert", path: ["content"], index: 1, values: ["b"] } } as unknown as CrdtEvent;
 
-  /**
-   * Subscribes to events for a specific channel/room.
-   * Returns a promise that resolves to an unsubscribe function.
-   */
-  subscribe(roomId: string, onMessage: (message: ServerMessage) => void): Promise<() => void>;
-}
+describe("InMemoryPubSubAdapter", () => {
+  it("should broadcast events to all subscribers in the same room", async () => {
+    const pubSub = new InMemoryPubSubAdapter();
+    const receivedEvents1: CrdtEvent[] = [];
+    const receivedEvents2: CrdtEvent[] = [];
 
-/**
- * A basic in-memory PubSub implementation.
- * Extremely useful for testing and local multi-replica scenarios on a single server process.
- */
-export class InMemoryPubSubAdapter implements PubSubAdapter {
-  private listeners = new Map<string, Set<(message: ServerMessage) => void>>();
+    const unsub1 = await pubSub.subscribe("room-1", (evt) => receivedEvents1.push(evt));
+    const unsub2 = await pubSub.subscribe("room-1", (evt) => receivedEvents2.push(evt));
 
-  async publish(roomId: string, message: ServerMessage): Promise<void> {
-    const roomListeners = this.listeners.get(roomId);
-    if (roomListeners) {
-      queueMicrotask(() => {
-        for (const listener of roomListeners) {
-          listener(message);
-        }
-      });
-    }
-  }
+    await pubSub.publish("room-1", dummyEvent1);
 
-  async subscribe(roomId: string, onMessage: (message: ServerMessage) => void): Promise<() => void> {
-    if (!this.listeners.has(roomId)) {
-      this.listeners.set(roomId, new Set());
-    }
-    this.listeners.get(roomId)!.add(onMessage);
+    // Wait a tick for microtask queue
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
-    return () => {
-      const roomListeners = this.listeners.get(roomId);
-      if (roomListeners) {
-        roomListeners.delete(onMessage);
-        if (roomListeners.size === 0) {
-          this.listeners.delete(roomId);
-        }
-      }
+    expect(receivedEvents1).toEqual([dummyEvent1]);
+    expect(receivedEvents2).toEqual([dummyEvent1]);
+
+    unsub1();
+    unsub2();
+  });
+
+  it("should isolate events by roomId", async () => {
+    const pubSub = new InMemoryPubSubAdapter();
+    const receivedEventsRoom1: CrdtEvent[] = [];
+    const receivedEventsRoom2: CrdtEvent[] = [];
+
+    const unsub1 = await pubSub.subscribe("room-1", (evt) => receivedEventsRoom1.push(evt));
+    const unsub2 = await pubSub.subscribe("room-2", (evt) => receivedEventsRoom2.push(evt));
+
+    await pubSub.publish("room-1", dummyEvent1);
+    await pubSub.publish("room-2", dummyEvent2);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(receivedEventsRoom1).toEqual([dummyEvent1]);
+    expect(receivedEventsRoom2).toEqual([dummyEvent2]);
+
+    unsub1();
+    unsub2();
+  });
+
+  it("should stop receiving events after unsubscribing", async () => {
+    const pubSub = new InMemoryPubSubAdapter();
+    const received: CrdtEvent[] = [];
+
+    const unsub = await pubSub.subscribe("room-1", (evt) => received.push(evt));
+
+    await pubSub.publish("room-1", dummyEvent1);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(received).toEqual([dummyEvent1]);
+
+    unsub();
+
+    await pubSub.publish("room-1", dummyEvent2);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(received).toEqual([dummyEvent1]); // Still only has the first event
+  });
+
+  it("should not throw or skip deliveries when a listener unsubscribes another mid-dispatch", async () => {
+    const pubSub = new InMemoryPubSubAdapter();
+    const receivedA: CrdtEvent[] = [];
+    const receivedB: CrdtEvent[] = [];
+    const receivedC: CrdtEvent[] = [];
+
+    // Listener A unsubscribes both B and C during dispatch. Because publish
+    // snapshots the listener set, every listener present at publish time must
+    // still receive the message and the iteration must not throw.
+    let unsubB: () => void = () => {};
+    let unsubC: () => void = () => {};
+
+    const unsubA = await pubSub.subscribe("room-1", (evt) => {
+      receivedA.push(evt);
+      unsubB();
+      unsubC();
+    });
+    unsubB = await pubSub.subscribe("room-1", (evt) => receivedB.push(evt));
+    unsubC = await pubSub.subscribe("room-1", (evt) => receivedC.push(evt));
+
+    await expect(pubSub.publish("room-1", dummyEvent1)).resolves.toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // All three listeners captured at publish time received the event.
+    expect(receivedA).toEqual([dummyEvent1]);
+    expect(receivedB).toEqual([dummyEvent1]);
+    expect(receivedC).toEqual([dummyEvent1]);
+
+    // The unsubscribes took effect for subsequent publishes.
+    await pubSub.publish("room-1", dummyEvent2);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(receivedA).toEqual([dummyEvent1, dummyEvent2]);
+    expect(receivedB).toEqual([dummyEvent1]);
+    expect(receivedC).toEqual([dummyEvent1]);
+
+    unsubA();
+  });
+});
+
+describe("NodeRedisPubSubAdapter", () => {
+  it("should publish correctly to Redis", async () => {
+    const mockPubClient = {
+      publish: vi.fn().mockResolvedValue(1),
     };
-  }
-}
+    const mockSubClient = {
+      subscribe: vi.fn().mockResolvedValue("OK"),
+      unsubscribe: vi.fn().mockResolvedValue("OK"),
+    };
+
+    const adapter = new NodeRedisPubSubAdapter(mockPubClient, mockSubClient);
+    await adapter.publish("my-room", dummyEvent1);
+
+    expect(mockPubClient.publish).toHaveBeenCalledWith("room:my-room", JSON.stringify(dummyEvent1));
+  });
+
+  it("should subscribe and unsubscribe correctly with node-redis callback style", async () => {
+    const mockPubClient = {
+      publish: vi.fn(),
+    };
+
+    let registeredCallback: ((message: string) => void) | undefined;
+    const mockSubClient = {
+      subscribe: vi.fn().mockImplementation(async (channel: string, cb: (message: string) => void) => {
+        registeredCallback = cb;
+        return "OK";
+      }),
+      unsubscribe: vi.fn().mockResolvedValue("OK"),
+    };
+
+    const adapter = new NodeRedisPubSubAdapter(mockPubClient, mockSubClient);
+    const received: CrdtEvent[] = [];
+
+    const unsub = await adapter.subscribe("my-room", (evt) => received.push(evt));
+
+    expect(mockSubClient.subscribe).toHaveBeenCalledWith("room:my-room", expect.any(Function));
+    expect(registeredCallback).toBeDefined();
+
+    // Trigger mock event message
+    registeredCallback!(JSON.stringify(dummyEvent1));
+    expect(received).toEqual([dummyEvent1]);
+
+    // Clean up
+    await unsub();
+    expect(mockSubClient.unsubscribe).toHaveBeenCalledWith("room:my-room");
+  });
+});
+
+describe("IoRedisPubSubAdapter", () => {
+  it("should publish correctly to Redis", async () => {
+    const mockPubClient = {
+      publish: vi.fn().mockResolvedValue(1),
+    };
+    const mockSubClient = {
+      subscribe: vi.fn().mockResolvedValue("OK"),
+      unsubscribe: vi.fn().mockResolvedValue("OK"),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+
+    const adapter = new IoRedisPubSubAdapter(mockPubClient, mockSubClient);
+    await adapter.publish("my-room", dummyEvent1);
+
+    expect(mockPubClient.publish).toHaveBeenCalledWith("room:my-room", JSON.stringify(dummyEvent1));
+  });
+
+  it("should subscribe and unsubscribe correctly with ioredis event emitter style", async () => {
+    const mockPubClient = {
+      publish: vi.fn(),
+    };
+    
+    // Simulate event emitter for ioredis
+    const listeners: Record<string, IoRedisOnMessageListener[]> = {};
+    const mockSubClient = {
+      subscribe: vi.fn().mockResolvedValue("OK"),
+      unsubscribe: vi.fn().mockResolvedValue("OK"),
+      on: vi.fn((event: string, cb: IoRedisOnMessageListener) => {
+        if (!listeners[event]) listeners[event] = [];
+        listeners[event].push(cb);
+      }),
+      off: vi.fn((event: string, cb: IoRedisOnMessageListener) => {
+        if (listeners[event]) {
+          listeners[event] = listeners[event].filter((fn) => fn !== cb);
+        }
+      }),
+    };
+
+    const adapter = new IoRedisPubSubAdapter(mockPubClient, mockSubClient);
+    const received: CrdtEvent[] = [];
+
+    const unsub = await adapter.subscribe("my-room", (evt) => received.push(evt));
+
+    expect(mockSubClient.subscribe).toHaveBeenCalledWith("room:my-room");
+    expect(mockSubClient.on).toHaveBeenCalledWith("message", expect.any(Function));
+
+    // Simulate Redis message event
+    const messageListener = listeners["message"]?.[0];
+    expect(messageListener).toBeDefined();
+
+    // Send correct channel and message
+    messageListener("room:my-room", JSON.stringify(dummyEvent1));
+    expect(received).toEqual([dummyEvent1]);
+
+    // Send mismatching channel
+    messageListener("room:other-room", JSON.stringify(dummyEvent2));
+    expect(received).toEqual([dummyEvent1]); // No change
+
+    // Clean up
+    await unsub();
+    expect(mockSubClient.unsubscribe).toHaveBeenCalledWith("room:my-room");
+    expect(mockSubClient.off).toHaveBeenCalledWith("message", messageListener);
+  });
+});
 ````
 
 ## File: packages/core/src/sync.ts
@@ -7874,6 +8448,68 @@ describe("Awareness Protocol", () => {
 });
 ````
 
+## File: packages/core/src/server/pubSubAdapter.ts
+````typescript
+import { ServerMessage } from "../index.js";
+
+/**
+ * Interface representing a publish/subscribe adapter to replicate events across instances.
+ */
+export interface PubSubAdapter {
+  /**
+   * Publishes an event to a specific channel/room.
+   */
+  publish(roomId: string, message: ServerMessage): Promise<void>;
+
+  /**
+   * Subscribes to events for a specific channel/room.
+   * Returns a promise that resolves to an unsubscribe function.
+   */
+  subscribe(roomId: string, onMessage: (message: ServerMessage) => void): Promise<() => void>;
+}
+
+/**
+ * A basic in-memory PubSub implementation.
+ * Extremely useful for testing and local multi-replica scenarios on a single server process.
+ */
+export class InMemoryPubSubAdapter implements PubSubAdapter {
+  private listeners = new Map<string, Set<(message: ServerMessage) => void>>();
+
+  async publish(roomId: string, message: ServerMessage): Promise<void> {
+    const roomListeners = this.listeners.get(roomId);
+    if (roomListeners) {
+      // Snapshot the listener set so that subscribe/unsubscribe calls triggered
+      // during dispatch cannot mutate the collection being iterated, and so a
+      // set that empties (and is dropped from `this.listeners`) before the
+      // microtask runs still delivers to the listeners present at publish time.
+      const listeners = [...roomListeners];
+      queueMicrotask(() => {
+        for (const listener of listeners) {
+          listener(message);
+        }
+      });
+    }
+  }
+
+  async subscribe(roomId: string, onMessage: (message: ServerMessage) => void): Promise<() => void> {
+    if (!this.listeners.has(roomId)) {
+      this.listeners.set(roomId, new Set());
+    }
+    this.listeners.get(roomId)!.add(onMessage);
+
+    return () => {
+      const roomListeners = this.listeners.get(roomId);
+      if (roomListeners) {
+        roomListeners.delete(onMessage);
+        if (roomListeners.size === 0) {
+          this.listeners.delete(roomId);
+        }
+      }
+    };
+  }
+}
+````
+
 ## File: packages/core/src/server/redisPubSubAdapter.ts
 ````typescript
 import { ServerMessage } from "../index.js";
@@ -7963,217 +8599,6 @@ export class IoRedisPubSubAdapter implements PubSubAdapter {
     };
   }
 }
-````
-
-## File: packages/core/src/tests/crdtClient.test.ts
-````typescript
-import { describe, it, expect } from 'vitest';
-import { Doc, CrdtEvent } from "../index.js";
-import { CrdtClient, MinimalClientWebSocket } from "../crdtClient.js";
-
-class MockClientWebSocket implements MinimalClientWebSocket {
-  sentData: string[] = [];
-  readyState = 1; // OPEN
-
-  private listeners: Record<string, ((...args: unknown[]) => void)[]> = {
-    message: [],
-    close: [],
-    error: [],
-    open: [],
-  };
-
-  send(data: string): void {
-    this.sentData.push(data);
-  }
-
-  addEventListener(
-    type: "message" | "close" | "error" | "open",
-    cb: ((event: { data: unknown }) => void) | (() => void) | ((err: unknown) => void)
-  ): void {
-    this.listeners[type].push(cb as (...args: unknown[]) => void);
-  }
-
-  removeEventListener(
-    type: "message" | "close" | "error" | "open",
-    cb: ((event: { data: unknown }) => void) | (() => void) | ((err: unknown) => void)
-  ): void {
-    const index = this.listeners[type].indexOf(cb as (...args: unknown[]) => void);
-    if (index !== -1) {
-      this.listeners[type].splice(index, 1);
-    }
-  }
-
-  getListenerCount(type: "message" | "close" | "error" | "open"): number {
-    return this.listeners[type].length;
-  }
-
-  emit(type: "message", event: { data: unknown }): void;
-  emit(type: "close"): void;
-  emit(type: "error", err: unknown): void;
-  emit(type: "open"): void;
-  emit(type: string, ...args: unknown[]): void {
-    this.listeners[type]?.forEach((cb) => cb(...args));
-  }
-}
-
-describe("CrdtClient", () => {
-  it("should send local changes to the server", () => {
-    const doc = new Doc("client-replica");
-    const client = new CrdtClient(doc);
-    const ws = new MockClientWebSocket();
-
-    client.bind(ws);
-
-    // Perform local change
-    doc.getMap().set("hello", "world");
-
-    // Local changes should be sent
-    expect(ws.sentData.length).toBe(1);
-    const parsed = JSON.parse(ws.sentData[0]);
-    expect(parsed.type).toBe("event");
-    expect(parsed.data.op.type).toBe("map-set");
-    expect(parsed.data.op.key).toBe("hello");
-    expect(parsed.data.op.value).toBe("world");
-
-    client.unbind();
-  });
-
-  it("should integrate remote events and snapshots", () => {
-    const doc = new Doc("client-replica");
-    const client = new CrdtClient(doc);
-    const ws = new MockClientWebSocket();
-
-    client.bind(ws);
-
-    // Send a snapshot from server to client
-    const sourceDoc = new Doc("server-doc");
-    sourceDoc.getMap().set("key1", "val1");
-    const snapshot = sourceDoc.egWalker.getStateSnapshot();
-
-    ws.emit("message", {
-      data: JSON.stringify({
-        type: "snapshot",
-        data: snapshot,
-      }),
-    });
-
-    // Client document should match the snapshot
-    expect(doc.getMap().get("key1")).toBe("val1");
-
-    // Send an event from server to client (from another replica)
-    const anotherDoc = new Doc("another-replica");
-    // Connect it conceptually to the snapshot version by copying
-    anotherDoc.egWalker.loadStateSnapshot(snapshot);
-    const event = anotherDoc.getMap().set("key2", "val2");
-
-    ws.emit("message", {
-      data: JSON.stringify({
-        type: "event",
-        data: event,
-      }),
-    });
-
-    // Client document should update
-    expect(doc.getMap().get("key2")).toBe("val2");
-
-    client.unbind();
-  });
-
-  it("should trigger message callbacks", () => {
-    const doc = new Doc("client-replica");
-    const client = new CrdtClient(doc);
-    const ws = new MockClientWebSocket();
-
-    const messagesReceived: { type: string; data: unknown }[] = [];
-    client.onMessage((type, data) => {
-      messagesReceived.push({ type, data });
-    });
-
-    client.bind(ws);
-
-    const event: CrdtEvent = {
-      id: "another:0",
-      replicaId: "another",
-      parents: [],
-      op: {
-        type: "map-set",
-        path: [],
-        key: "x",
-        value: 123,
-      },
-    };
-
-    ws.emit("message", {
-      data: JSON.stringify({
-        type: "event",
-        data: event,
-      }),
-    });
-
-    expect(messagesReceived.length).toBe(1);
-    expect(messagesReceived[0].type).toBe("event");
-    const receivedEvent = messagesReceived[0].data as CrdtEvent;
-    expect(receivedEvent.id).toBe("another:0");
-
-    client.unbind();
-  });
-
-  it("should cleanly remove message listeners on unbind", () => {
-    const doc = new Doc("client-replica");
-    const client = new CrdtClient(doc);
-    const ws = new MockClientWebSocket();
-
-    client.bind(ws);
-    expect(ws.getListenerCount("message")).toBe(1);
-
-    client.unbind();
-    expect(ws.getListenerCount("message")).toBe(0);
-  });
-
-  describe("syncText", () => {
-    it("should sync text to a YArray (character array) container", () => {
-      const doc = new Doc("client-replica");
-      const client = new CrdtClient(doc);
-
-      // 1. Initial sync (inserts all characters)
-      client.syncText(["content"], "hello", "array");
-      const array = doc.getMap().getArray("content");
-      expect(array.toJSON().join("")).toBe("hello");
-
-      // 2. Sync with change (diff update: replaces 'o' with 'a')
-      const versionBefore = doc.egWalker.getVersion();
-      client.syncText(["content"], "hella", "array");
-      expect(array.toJSON().join("")).toBe("hella");
-      expect(doc.egWalker.getVersion()).not.toEqual(versionBefore);
-
-      // 3. Sync with no changes
-      const versionAfter = doc.egWalker.getVersion();
-      client.syncText(["content"], "hella", "array");
-      expect(doc.egWalker.getVersion()).toEqual(versionAfter);
-    });
-
-    it("should sync text to a YText container", () => {
-      const doc = new Doc("client-replica");
-      const client = new CrdtClient(doc);
-
-      // 1. Initial sync (inserts text)
-      client.syncText(["text-content"], "world", "text");
-      const text = doc.getMap().getText("text-content");
-      expect(text.toString()).toBe("world");
-
-      // 2. Sync with change (replaces 'world' with 'word')
-      const versionBefore = doc.egWalker.getVersion();
-      client.syncText(["text-content"], "word", "text");
-      expect(text.toString()).toBe("word");
-      expect(doc.egWalker.getVersion()).not.toEqual(versionBefore);
-
-      // 3. Sync with no changes
-      const versionAfter = doc.egWalker.getVersion();
-      client.syncText(["text-content"], "word", "text");
-      expect(doc.egWalker.getVersion()).toEqual(versionAfter);
-    });
-  });
-});
 ````
 
 ## File: packages/demo/tsconfig.json
@@ -8480,6 +8905,338 @@ describe("Single-event state diffing for concurrent edits", () => {
 		expect(docA.getMap().get("key2")).toBe("A");
 		expect(docA.getMap().get("key3")).toBe("B");
 	});
+});
+````
+
+## File: packages/core/src/tests/crdtClient.test.ts
+````typescript
+import { describe, it, expect } from 'vitest';
+import { Doc, CrdtEvent } from "../index.js";
+import { CrdtClient, MinimalClientWebSocket } from "../crdtClient.js";
+
+class MockClientWebSocket implements MinimalClientWebSocket {
+  sentData: string[] = [];
+  readyState = 1; // OPEN
+
+  private listeners: Record<string, ((...args: unknown[]) => void)[]> = {
+    message: [],
+    close: [],
+    error: [],
+    open: [],
+  };
+
+  send(data: string): void {
+    this.sentData.push(data);
+  }
+
+  addEventListener(
+    type: "message" | "close" | "error" | "open",
+    cb: ((event: { data: unknown }) => void) | (() => void) | ((err: unknown) => void)
+  ): void {
+    this.listeners[type].push(cb as (...args: unknown[]) => void);
+  }
+
+  removeEventListener(
+    type: "message" | "close" | "error" | "open",
+    cb: ((event: { data: unknown }) => void) | (() => void) | ((err: unknown) => void)
+  ): void {
+    const index = this.listeners[type].indexOf(cb as (...args: unknown[]) => void);
+    if (index !== -1) {
+      this.listeners[type].splice(index, 1);
+    }
+  }
+
+  getListenerCount(type: "message" | "close" | "error" | "open"): number {
+    return this.listeners[type].length;
+  }
+
+  emit(type: "message", event: { data: unknown }): void;
+  emit(type: "close"): void;
+  emit(type: "error", err: unknown): void;
+  emit(type: "open"): void;
+  emit(type: string, ...args: unknown[]): void {
+    this.listeners[type]?.forEach((cb) => cb(...args));
+  }
+}
+
+describe("CrdtClient", () => {
+  it("should send local changes to the server", () => {
+    const doc = new Doc("client-replica");
+    const client = new CrdtClient(doc);
+    const ws = new MockClientWebSocket();
+
+    client.bind(ws);
+
+    // Perform local change
+    doc.getMap().set("hello", "world");
+
+    // Local changes should be sent
+    expect(ws.sentData.length).toBe(1);
+    const parsed = JSON.parse(ws.sentData[0]);
+    expect(parsed.type).toBe("event");
+    expect(parsed.data.op.type).toBe("map-set");
+    expect(parsed.data.op.key).toBe("hello");
+    expect(parsed.data.op.value).toBe("world");
+
+    client.unbind();
+  });
+
+  it("should integrate remote events and snapshots", () => {
+    const doc = new Doc("client-replica");
+    const client = new CrdtClient(doc);
+    const ws = new MockClientWebSocket();
+
+    client.bind(ws);
+
+    // Send a snapshot from server to client
+    const sourceDoc = new Doc("server-doc");
+    sourceDoc.getMap().set("key1", "val1");
+    const snapshot = sourceDoc.egWalker.getStateSnapshot();
+
+    ws.emit("message", {
+      data: JSON.stringify({
+        type: "snapshot",
+        data: snapshot,
+      }),
+    });
+
+    // Client document should match the snapshot
+    expect(doc.getMap().get("key1")).toBe("val1");
+
+    // Send an event from server to client (from another replica)
+    const anotherDoc = new Doc("another-replica");
+    // Connect it conceptually to the snapshot version by copying
+    anotherDoc.egWalker.loadStateSnapshot(snapshot);
+    const event = anotherDoc.getMap().set("key2", "val2");
+
+    ws.emit("message", {
+      data: JSON.stringify({
+        type: "event",
+        data: event,
+      }),
+    });
+
+    // Client document should update
+    expect(doc.getMap().get("key2")).toBe("val2");
+
+    client.unbind();
+  });
+
+  it("should trigger message callbacks", () => {
+    const doc = new Doc("client-replica");
+    const client = new CrdtClient(doc);
+    const ws = new MockClientWebSocket();
+
+    const messagesReceived: { type: string; data: unknown }[] = [];
+    client.onMessage((type, data) => {
+      messagesReceived.push({ type, data });
+    });
+
+    client.bind(ws);
+
+    const event: CrdtEvent = {
+      id: "another:0",
+      replicaId: "another",
+      parents: [],
+      op: {
+        type: "map-set",
+        path: [],
+        key: "x",
+        value: 123,
+      },
+    };
+
+    ws.emit("message", {
+      data: JSON.stringify({
+        type: "event",
+        data: event,
+      }),
+    });
+
+    expect(messagesReceived.length).toBe(1);
+    expect(messagesReceived[0].type).toBe("event");
+    const receivedEvent = messagesReceived[0].data as CrdtEvent;
+    expect(receivedEvent.id).toBe("another:0");
+
+    client.unbind();
+  });
+
+  it("should cleanly remove message listeners on unbind", () => {
+    const doc = new Doc("client-replica");
+    const client = new CrdtClient(doc);
+    const ws = new MockClientWebSocket();
+
+    client.bind(ws);
+    expect(ws.getListenerCount("message")).toBe(1);
+
+    client.unbind();
+    expect(ws.getListenerCount("message")).toBe(0);
+  });
+
+  describe("reconnect resync", () => {
+    it("preserves and replays offline edits across a genuinely severed socket", () => {
+      const doc = new Doc("client-A");
+      const client = new CrdtClient(doc);
+
+      // Server's initial state (some pre-existing content).
+      const serverDoc = new Doc("server");
+      serverDoc.getMap().set("base", "1");
+      const initialSnapshot = serverDoc.egWalker.getStateSnapshot();
+
+      // 1. Connect and receive the initial snapshot.
+      const ws1 = new MockClientWebSocket();
+      client.bind(ws1);
+      ws1.emit("message", {
+        data: JSON.stringify({ type: "snapshot", data: initialSnapshot }),
+      });
+      expect(doc.getMap().get("base")).toBe("1");
+      const sentWhileOnline = ws1.sentData.length;
+
+      // 2. Genuinely sever the socket: mark it CLOSED and drop the object.
+      ws1.readyState = 3; // CLOSED
+      ws1.emit("close");
+
+      // 3. Make an edit while offline. It must not be lost and cannot be sent
+      //    over the severed socket.
+      doc.getMap().set("offline", "yes");
+      expect(doc.getMap().get("offline")).toBe("yes");
+      expect(ws1.sentData.length).toBe(sentWhileOnline);
+
+      // 4. Reconnect with a brand-new socket object via rebind().
+      const ws2 = new MockClientWebSocket(); // OPEN
+      client.rebind(ws2);
+
+      // 5. Server greets the new socket with a snapshot that predates the
+      //    offline edit (the server never received it).
+      ws2.emit("message", {
+        data: JSON.stringify({ type: "snapshot", data: initialSnapshot }),
+      });
+
+      // The offline edit survived the destructive snapshot load...
+      expect(doc.getMap().get("offline")).toBe("yes");
+      expect(doc.getMap().get("base")).toBe("1");
+
+      // ...and was replayed to the server over the new socket.
+      const offlineSends = ws2.sentData
+        .map((s) => JSON.parse(s))
+        .filter(
+          (m) =>
+            m.type === "event" &&
+            m.data.op.type === "map-set" &&
+            m.data.op.key === "offline",
+        );
+      expect(offlineSends.length).toBeGreaterThan(0);
+
+      client.unbind();
+    });
+
+    it("does not echo foreign events back after loading a snapshot", () => {
+      const doc = new Doc("client-B");
+      const client = new CrdtClient(doc);
+
+      const serverDoc = new Doc("server");
+      serverDoc.getMap().set("k", "v");
+      const snapshot = serverDoc.egWalker.getStateSnapshot();
+
+      const ws = new MockClientWebSocket();
+      client.bind(ws);
+      ws.emit("message", {
+        data: JSON.stringify({ type: "snapshot", data: snapshot }),
+      });
+
+      // The client had no local-only events, so nothing should be sent.
+      expect(ws.sentData.length).toBe(0);
+
+      client.unbind();
+    });
+
+    it("rebind switches sockets without throwing and moves listeners", () => {
+      const doc = new Doc("client-C");
+      const client = new CrdtClient(doc);
+
+      const ws1 = new MockClientWebSocket();
+      client.bind(ws1);
+      expect(ws1.getListenerCount("message")).toBe(1);
+
+      const ws2 = new MockClientWebSocket();
+      expect(() => client.rebind(ws2)).not.toThrow();
+
+      expect(ws1.getListenerCount("message")).toBe(0);
+      expect(ws1.getListenerCount("open")).toBe(0);
+      expect(ws2.getListenerCount("message")).toBe(1);
+
+      client.unbind();
+    });
+
+    it("flushes queued offline edits when a bound socket opens", () => {
+      const doc = new Doc("client-D");
+      const client = new CrdtClient(doc);
+
+      // Socket starts in CONNECTING state (not yet open).
+      const ws = new MockClientWebSocket();
+      ws.readyState = 0; // CONNECTING
+      client.bind(ws);
+
+      // Edit while the socket is still connecting: it must be queued, not sent.
+      doc.getMap().set("queued", "1");
+      expect(ws.sentData.length).toBe(0);
+
+      // Socket opens: the queued edit is flushed.
+      ws.readyState = 1; // OPEN
+      ws.emit("open");
+
+      const sends = ws.sentData
+        .map((s) => JSON.parse(s))
+        .filter((m) => m.type === "event" && m.data.op.key === "queued");
+      expect(sends.length).toBe(1);
+
+      client.unbind();
+    });
+  });
+
+  describe("syncText", () => {
+    it("should sync text to a YArray (character array) container", () => {
+      const doc = new Doc("client-replica");
+      const client = new CrdtClient(doc);
+
+      // 1. Initial sync (inserts all characters)
+      client.syncText(["content"], "hello", "array");
+      const array = doc.getMap().getArray("content");
+      expect(array.toJSON().join("")).toBe("hello");
+
+      // 2. Sync with change (diff update: replaces 'o' with 'a')
+      const versionBefore = doc.egWalker.getVersion();
+      client.syncText(["content"], "hella", "array");
+      expect(array.toJSON().join("")).toBe("hella");
+      expect(doc.egWalker.getVersion()).not.toEqual(versionBefore);
+
+      // 3. Sync with no changes
+      const versionAfter = doc.egWalker.getVersion();
+      client.syncText(["content"], "hella", "array");
+      expect(doc.egWalker.getVersion()).toEqual(versionAfter);
+    });
+
+    it("should sync text to a YText container", () => {
+      const doc = new Doc("client-replica");
+      const client = new CrdtClient(doc);
+
+      // 1. Initial sync (inserts text)
+      client.syncText(["text-content"], "world", "text");
+      const text = doc.getMap().getText("text-content");
+      expect(text.toString()).toBe("world");
+
+      // 2. Sync with change (replaces 'world' with 'word')
+      const versionBefore = doc.egWalker.getVersion();
+      client.syncText(["text-content"], "word", "text");
+      expect(text.toString()).toBe("word");
+      expect(doc.egWalker.getVersion()).not.toEqual(versionBefore);
+
+      // 3. Sync with no changes
+      const versionAfter = doc.egWalker.getVersion();
+      client.syncText(["text-content"], "word", "text");
+      expect(doc.egWalker.getVersion()).toEqual(versionAfter);
+    });
+  });
 });
 ````
 
@@ -9283,324 +10040,6 @@ describe("EgWalker extended coverage", () => {
 });
 ````
 
-## File: packages/core/src/crdtClient.ts
-````typescript
-import { Doc, ServerMessage, YArray, YText, YMap } from "./index.js";
-import { Logger, getLogger } from "./logger.js";
-
-/**
- * Minimal WebSocket interface required by CrdtClient.
- * Conforming to standard browser WebSocket and ws library in Node.
- */
-export interface MinimalClientWebSocket {
-  send(data: string): void;
-  readyState: number; // 0: CONNECTING, 1: OPEN, 2: CLOSING, 3: CLOSED
-  addEventListener(type: "message", cb: (event: { data: unknown }) => void): void;
-  addEventListener(type: "close", cb: () => void): void;
-  addEventListener(type: "error", cb: (err: unknown) => void): void;
-  addEventListener(type: "open", cb: () => void): void;
-  removeEventListener?(type: "message", cb: (event: { data: unknown }) => void): void;
-}
-
-/**
- * CrdtClient binds a local Doc instance to a collaborative server via WebSockets.
- * It automatically propagates local operations to the server and integrates remote operations.
- */
-export class CrdtClient {
-  private doc: Doc;
-  private socket: MinimalClientWebSocket | null = null;
-  private isApplyingRemote = false;
-  private unsubscribeDocListener: (() => void) | null = null;
-  private handleMessageRef: ((msgEvent: { data: unknown }) => void) | null = null;
-  private messageListeners = new Set<(type: "snapshot" | "event" | "awareness", data: unknown) => void>();
-  private logger: Logger;
-
-  constructor(doc: Doc, logger: Logger = getLogger()) {
-    this.doc = doc;
-    this.logger = logger;
-  }
-
-  /**
-   * Binds the client to a WebSocket connection.
-   * Sets up listeners to synchronize the document.
-   */
-  bind(socket: MinimalClientWebSocket): void {
-    if (this.socket) {
-      throw new Error("CrdtClient is already bound to a socket. Call unbind() first.");
-    }
-    this.socket = socket;
-
-    // Listen to local changes in the document to replicate them to the server
-    this.unsubscribeDocListener = this.doc.egWalker.onEvent((event, isLocal) => {
-      if (isLocal && !this.isApplyingRemote) {
-        if (this.socket && this.socket.readyState === 1) { // OPEN
-          this.socket.send(JSON.stringify({ type: "event", data: event }));
-        }
-      }
-    });
-
-    this.handleMessageRef = (msgEvent: { data: unknown }) => {
-      try {
-        const msgStr = typeof msgEvent.data === "string" ? msgEvent.data : String(msgEvent.data);
-        const parsed: ServerMessage = JSON.parse(msgStr);
-
-        this.isApplyingRemote = true;
-
-        if (parsed.type === "snapshot") {
-          this.doc.egWalker.loadStateSnapshot(parsed.data);
-          this.notifyListeners("snapshot", parsed.data);
-        } else if (parsed.type === "event") {
-          const event = parsed.data;
-          // Avoid integrating our own events if they are broadcasted back
-          if (event.replicaId !== this.doc.egWalker.getReplicaId()) {
-            this.doc.egWalker.integrateRemote([event]);
-          }
-          this.notifyListeners("event", event);
-        } else if (parsed.type === "awareness") {
-          const { replicaId, state } = parsed.data;
-          if (replicaId !== this.doc.egWalker.getReplicaId()) {
-            this.doc.egWalker.awarenessStates.set(replicaId, state);
-          }
-          this.notifyListeners("awareness", parsed.data);
-        }
-      } catch (err) {
-        this.logger.error("[CrdtClient] Error processing message:", err);
-      } finally {
-        this.isApplyingRemote = false;
-      }
-    };
-
-    socket.addEventListener("message", this.handleMessageRef);
-  }
-
-  /**
-   * Unbinds the client from the WebSocket connection, cleaning up listeners.
-   */
-  unbind(): void {
-    if (this.unsubscribeDocListener) {
-      this.unsubscribeDocListener();
-      this.unsubscribeDocListener = null;
-    }
-    if (this.socket && this.handleMessageRef && this.socket.removeEventListener) {
-      this.socket.removeEventListener("message", this.handleMessageRef);
-    }
-    this.handleMessageRef = null;
-    this.socket = null;
-  }
-
-  /**
-   * Sets the local awareness state and broadcasts it to other replicas.
-   * @param state The awareness state to broadcast.
-   */
-  setAwareness(state: unknown): void {
-    this.doc.egWalker.setAwareness(state);
-    if (this.socket && this.socket.readyState === 1) {
-      this.socket.send(JSON.stringify({
-        type: "awareness",
-        data: { replicaId: this.doc.egWalker.getReplicaId(), state }
-      }));
-    }
-  }
-
-  /**
-   * Register a custom listener to receive raw sync events/snapshots/awareness.
-   */
-  onMessage(cb: (type: "snapshot" | "event" | "awareness", data: unknown) => void): () => void {
-    this.messageListeners.add(cb);
-    return () => {
-      this.messageListeners.delete(cb);
-    };
-  }
-
-  private notifyListeners(type: "snapshot" | "event" | "awareness", data: unknown) {
-    for (const listener of this.messageListeners) {
-      try {
-        listener(type, data);
-      } catch (err) {
-        this.logger.error("[CrdtClient] Listener error:", err);
-      }
-    }
-  }
-
-  /**
-   * Returns whether the client is currently applying remote updates to the document.
-   */
-  isApplyingRemoteChanges(): boolean {
-    return this.isApplyingRemote;
-  }
-
-  /**
-   * Returns the underlying Doc instance.
-   */
-  getDoc(): Doc {
-    return this.doc;
-  }
-
-  /**
-   * Resolves the CRDT instance at the given path starting from the root map.
-   */
-  private resolvePath(path: (string | number)[]): unknown {
-    let current: unknown = this.doc.getMap();
-    for (const segment of path) {
-      if (current instanceof YMap) {
-        current = current.get(String(segment));
-      } else if (current instanceof YArray) {
-        current = current.get(Number(segment));
-      } else {
-        return undefined;
-      }
-    }
-    return current;
-  }
-
-  /**
-   * Synchronizes a local string value with a collaborative text container (either YArray of characters or YText)
-   * at the specified path. It calculates the minimal set of delete and insert operations and applies them.
-   * 
-   * @param path The path of the target container in the document.
-   * @param newText The new text value to synchronize.
-   * @param type Optional preference for the container type ("array" | "text") if it doesn't exist yet. Defaults to "text".
-   */
-  syncText(path: (string | number)[], newText: string, type: "array" | "text" = "text"): void {
-    const target = this.resolvePath(path);
-    
-    let oldText = "";
-    let isTextOp = type === "text";
-
-    if (target instanceof YText) {
-      oldText = target.toString();
-      isTextOp = true;
-    } else if (target instanceof YArray) {
-      oldText = target.toJSON().map(item => typeof item === "string" ? item : "").join("");
-      isTextOp = false;
-    }
-
-    if (newText === oldText) {
-      return;
-    }
-
-    let start = 0;
-    while (
-      start < oldText.length &&
-      start < newText.length &&
-      oldText[start] === newText[start]
-    ) {
-      start++;
-    }
-
-    let oldEnd = oldText.length;
-    let newEnd = newText.length;
-    while (
-      oldEnd > start &&
-      newEnd > start &&
-      oldEnd <= oldText.length &&
-      newEnd <= newText.length &&
-      oldText[oldEnd - 1] === newText[newEnd - 1]
-    ) {
-      oldEnd--;
-      newEnd--;
-    }
-
-    const deletedLength = oldEnd - start;
-    const insertedText = newText.substring(start, newEnd);
-
-    if (target) {
-      if (target instanceof YText) {
-        if (deletedLength > 0) target.delete(start, deletedLength);
-        if (insertedText.length > 0) target.insert(start, insertedText);
-      } else if (target instanceof YArray) {
-        if (deletedLength > 0) target.delete(start, deletedLength);
-        if (insertedText.length > 0) target.insert(start, insertedText.split(""));
-      }
-    } else {
-      if (insertedText.length > 0) {
-        if (isTextOp) {
-          this.doc.egWalker.localOp({
-            type: "text-insert",
-            path,
-            afterId: null,
-            text: insertedText,
-          });
-        } else {
-          this.doc.egWalker.localOp({
-            type: "array-insert",
-            path,
-            afterId: null,
-            values: insertedText.split(""),
-          });
-        }
-      }
-    }
-  }
-}
-````
-
-## File: packages/demo/interactive-test/main.ts
-````typescript
-import { Doc } from "@ddgll/ts-crdt";
-import { CrdtClient } from "@ddgll/ts-crdt/client";
-
-const textarea = document.getElementById("user1") as HTMLTextAreaElement;
-const replicaId = crypto.randomUUID();
-const doc = new Doc(replicaId);
-const client = new CrdtClient(doc);
-let isInitialized = false;
-
-// Disable the textarea until the client is initialized
-textarea.disabled = true;
-
-const urlParams = new URLSearchParams(window.location.search);
-const room = urlParams.get("room") || "default";
-const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-const ws = new WebSocket(`${protocol}//${window.location.host}/ws?room=${room}`);
-
-client.bind(ws);
-
-ws.onopen = () => {
-  console.log("Connected to server");
-};
-
-client.onMessage((type) => {
-  if (type === "snapshot") {
-    isInitialized = true;
-    textarea.disabled = false; // Enable input now
-    console.log("Client initialized.");
-  }
-  updateTextarea();
-});
-
-ws.onclose = () => {
-  console.log("Disconnected from server");
-  textarea.disabled = true;
-};
-
-ws.onerror = (error) => {
-  console.error("WebSocket error:", error);
-  textarea.disabled = true;
-};
-
-function updateTextarea() {
-  const content = doc.getMap().getArray("content");
-  if (content) {
-    const text = content.toJSON().join("");
-    // Avoid resetting cursor position if text is the same
-    if (textarea.value !== text) {
-      textarea.value = text;
-    }
-  } else {
-    textarea.value = "";
-  }
-}
-
-textarea.addEventListener("input", () => {
-  if (!isInitialized || client.isApplyingRemoteChanges()) {
-    return;
-  }
-
-  client.syncText(["content"], textarea.value, "array");
-});
-````
-
 ## File: packages/core/src/egWalker/tests/addEvent.test.ts
 ````typescript
 import { describe, it, expect } from 'vitest';
@@ -10055,6 +10494,440 @@ describe("Event Graph Compaction", () => {
 });
 ````
 
+## File: packages/core/src/crdtClient.ts
+````typescript
+import { Doc, ServerMessage, YArray, YText, YMap, CrdtEvent } from "./index.js";
+import { Logger, getLogger } from "./logger.js";
+
+/**
+ * Minimal WebSocket interface required by CrdtClient.
+ * Conforming to standard browser WebSocket and ws library in Node.
+ */
+export interface MinimalClientWebSocket {
+  send(data: string): void;
+  readyState: number; // 0: CONNECTING, 1: OPEN, 2: CLOSING, 3: CLOSED
+  addEventListener(type: "message", cb: (event: { data: unknown }) => void): void;
+  addEventListener(type: "close", cb: () => void): void;
+  addEventListener(type: "error", cb: (err: unknown) => void): void;
+  addEventListener(type: "open", cb: () => void): void;
+  removeEventListener?(type: "message", cb: (event: { data: unknown }) => void): void;
+  removeEventListener?(type: "open", cb: () => void): void;
+}
+
+/**
+ * CrdtClient binds a local Doc instance to a collaborative server via WebSockets.
+ * It automatically propagates local operations to the server and integrates remote operations.
+ */
+export class CrdtClient {
+  private doc: Doc;
+  private socket: MinimalClientWebSocket | null = null;
+  private isApplyingRemote = false;
+  private unsubscribeDocListener: (() => void) | null = null;
+  private handleMessageRef: ((msgEvent: { data: unknown }) => void) | null = null;
+  private handleOpenRef: (() => void) | null = null;
+  private messageListeners = new Set<(type: "snapshot" | "event" | "awareness", data: unknown) => void>();
+  private logger: Logger;
+  /**
+   * Local events awaiting delivery to the server. This queue lives for the
+   * lifetime of the client (independent of any single socket) so that edits
+   * made while disconnected survive reconnection and are replayed once a socket
+   * is open again. Events are enqueued when observed and drained on flush.
+   */
+  private pendingLocalEvents: CrdtEvent[] = [];
+
+  constructor(doc: Doc, logger: Logger = getLogger()) {
+    this.doc = doc;
+    this.logger = logger;
+
+    // Observe local changes for the entire lifetime of the client, not just
+    // while a socket is bound. Edits produced while offline are queued here and
+    // replayed on (re)connect instead of being silently dropped.
+    this.unsubscribeDocListener = this.doc.egWalker.onEvent((event, isLocal) => {
+      if (isLocal && !this.isApplyingRemote) {
+        this.enqueueLocalEvent(event);
+        this.flushPendingEvents();
+      }
+    });
+  }
+
+  /**
+   * Binds the client to a WebSocket connection.
+   * Sets up listeners to synchronize the document.
+   */
+  bind(socket: MinimalClientWebSocket): void {
+    if (this.socket) {
+      throw new Error("CrdtClient is already bound to a socket. Call unbind() first (or use rebind()).");
+    }
+    this.socket = socket;
+
+    this.handleMessageRef = (msgEvent: { data: unknown }) => {
+      try {
+        const msgStr = typeof msgEvent.data === "string" ? msgEvent.data : String(msgEvent.data);
+        const parsed: ServerMessage = JSON.parse(msgStr);
+
+        this.isApplyingRemote = true;
+
+        if (parsed.type === "snapshot") {
+          // A snapshot load is destructive: it replaces the whole graph with the
+          // server's state. Capture this replica's own events first so local-only
+          // edits (e.g. produced while disconnected) are not erased by the load.
+          const replicaId = this.doc.egWalker.getReplicaId();
+          const localEventsBefore = this.doc.egWalker.graph
+            .getAllEvents()
+            .filter((event) => event.replicaId === replicaId);
+
+          this.doc.egWalker.loadStateSnapshot(parsed.data);
+
+          // Re-integrate any of our events the incoming snapshot doesn't yet
+          // contain, and re-queue them for delivery. This makes reconnection
+          // converge (offline edits survive) instead of dropping data.
+          const graph = this.doc.egWalker.graph;
+          const missing = localEventsBefore.filter(
+            (event) => graph.getEvent(event.id) === undefined,
+          );
+          if (missing.length > 0) {
+            this.doc.egWalker.integrateRemote(missing);
+            for (const event of missing) {
+              this.enqueueLocalEvent(event);
+            }
+            this.flushPendingEvents();
+          }
+
+          this.notifyListeners("snapshot", parsed.data);
+        } else if (parsed.type === "event") {
+          const event = parsed.data;
+          // Avoid integrating our own events if they are broadcasted back
+          if (event.replicaId !== this.doc.egWalker.getReplicaId()) {
+            this.doc.egWalker.integrateRemote([event]);
+          }
+          this.notifyListeners("event", event);
+        } else if (parsed.type === "awareness") {
+          const { replicaId, state } = parsed.data;
+          if (replicaId !== this.doc.egWalker.getReplicaId()) {
+            this.doc.egWalker.awarenessStates.set(replicaId, state);
+          }
+          this.notifyListeners("awareness", parsed.data);
+        }
+      } catch (err) {
+        this.logger.error("[CrdtClient] Error processing message:", err);
+      } finally {
+        this.isApplyingRemote = false;
+      }
+    };
+
+    socket.addEventListener("message", this.handleMessageRef);
+
+    // On (re)connect, replay everything the server may be missing. Some sockets
+    // are already OPEN by the time they are handed to bind() (e.g. on rebind of
+    // a pre-connected socket), in which case "open" has already fired, so flush
+    // eagerly as well.
+    this.handleOpenRef = () => this.flushPendingEvents();
+    socket.addEventListener("open", this.handleOpenRef);
+    if (socket.readyState === 1) { // OPEN
+      this.flushPendingEvents();
+    }
+  }
+
+  /**
+   * Unbinds the client from the WebSocket connection, cleaning up the socket
+   * listeners. The document listener and the pending-event queue intentionally
+   * survive so that edits made while unbound are replayed by a later bind()/
+   * rebind().
+   */
+  unbind(): void {
+    if (this.socket && this.socket.removeEventListener) {
+      if (this.handleMessageRef) {
+        this.socket.removeEventListener("message", this.handleMessageRef);
+      }
+      if (this.handleOpenRef) {
+        this.socket.removeEventListener("open", this.handleOpenRef);
+      }
+    }
+    this.handleMessageRef = null;
+    this.handleOpenRef = null;
+    this.socket = null;
+  }
+
+  /**
+   * Rebinds the client to a fresh socket after a disconnect. Prefer this over a
+   * manual unbind()/bind() pair for reconnection: the pending-event queue and
+   * the document listener are preserved, so local edits accumulated while the
+   * previous socket was down are replayed to the server once the new socket is
+   * open.
+   * @param socket The new WebSocket connection to bind to.
+   */
+  rebind(socket: MinimalClientWebSocket): void {
+    this.unbind();
+    this.bind(socket);
+  }
+
+  /**
+   * Queues a local event for delivery to the server, de-duplicating by event id
+   * so an event observed both via the document listener and via snapshot
+   * recovery is never sent twice.
+   */
+  private enqueueLocalEvent(event: CrdtEvent): void {
+    if (this.pendingLocalEvents.some((e) => e.id === event.id)) {
+      return;
+    }
+    this.pendingLocalEvents.push(event);
+  }
+
+  /**
+   * Sends all queued local events to the server if a socket is currently open,
+   * clearing the queue on send. If no socket is open the events stay queued and
+   * are retried on the next flush (e.g. when a socket opens or a snapshot is
+   * received on reconnect). Re-sending an event the server already has is safe:
+   * server-side integration is idempotent.
+   */
+  private flushPendingEvents(): void {
+    if (!this.socket || this.socket.readyState !== 1) { // not OPEN
+      return;
+    }
+    if (this.pendingLocalEvents.length === 0) {
+      return;
+    }
+    const toSend = this.pendingLocalEvents;
+    this.pendingLocalEvents = [];
+    for (const event of toSend) {
+      this.socket.send(JSON.stringify({ type: "event", data: event }));
+    }
+  }
+
+  /**
+   * Sets the local awareness state and broadcasts it to other replicas.
+   * @param state The awareness state to broadcast.
+   */
+  setAwareness(state: unknown): void {
+    this.doc.egWalker.setAwareness(state);
+    if (this.socket && this.socket.readyState === 1) {
+      this.socket.send(JSON.stringify({
+        type: "awareness",
+        data: { replicaId: this.doc.egWalker.getReplicaId(), state }
+      }));
+    }
+  }
+
+  /**
+   * Register a custom listener to receive raw sync events/snapshots/awareness.
+   */
+  onMessage(cb: (type: "snapshot" | "event" | "awareness", data: unknown) => void): () => void {
+    this.messageListeners.add(cb);
+    return () => {
+      this.messageListeners.delete(cb);
+    };
+  }
+
+  private notifyListeners(type: "snapshot" | "event" | "awareness", data: unknown) {
+    for (const listener of this.messageListeners) {
+      try {
+        listener(type, data);
+      } catch (err) {
+        this.logger.error("[CrdtClient] Listener error:", err);
+      }
+    }
+  }
+
+  /**
+   * Returns whether the client is currently applying remote updates to the document.
+   */
+  isApplyingRemoteChanges(): boolean {
+    return this.isApplyingRemote;
+  }
+
+  /**
+   * Returns the underlying Doc instance.
+   */
+  getDoc(): Doc {
+    return this.doc;
+  }
+
+  /**
+   * Resolves the CRDT instance at the given path starting from the root map.
+   */
+  private resolvePath(path: (string | number)[]): unknown {
+    let current: unknown = this.doc.getMap();
+    for (const segment of path) {
+      if (current instanceof YMap) {
+        current = current.get(String(segment));
+      } else if (current instanceof YArray) {
+        current = current.get(Number(segment));
+      } else {
+        return undefined;
+      }
+    }
+    return current;
+  }
+
+  /**
+   * Synchronizes a local string value with a collaborative text container (either YArray of characters or YText)
+   * at the specified path. It calculates the minimal set of delete and insert operations and applies them.
+   * 
+   * @param path The path of the target container in the document.
+   * @param newText The new text value to synchronize.
+   * @param type Optional preference for the container type ("array" | "text") if it doesn't exist yet. Defaults to "text".
+   */
+  syncText(path: (string | number)[], newText: string, type: "array" | "text" = "text"): void {
+    const target = this.resolvePath(path);
+    
+    let oldText = "";
+    let isTextOp = type === "text";
+
+    if (target instanceof YText) {
+      oldText = target.toString();
+      isTextOp = true;
+    } else if (target instanceof YArray) {
+      oldText = target.toJSON().map(item => typeof item === "string" ? item : "").join("");
+      isTextOp = false;
+    }
+
+    if (newText === oldText) {
+      return;
+    }
+
+    let start = 0;
+    while (
+      start < oldText.length &&
+      start < newText.length &&
+      oldText[start] === newText[start]
+    ) {
+      start++;
+    }
+
+    let oldEnd = oldText.length;
+    let newEnd = newText.length;
+    while (
+      oldEnd > start &&
+      newEnd > start &&
+      oldEnd <= oldText.length &&
+      newEnd <= newText.length &&
+      oldText[oldEnd - 1] === newText[newEnd - 1]
+    ) {
+      oldEnd--;
+      newEnd--;
+    }
+
+    const deletedLength = oldEnd - start;
+    const insertedText = newText.substring(start, newEnd);
+
+    if (target) {
+      if (target instanceof YText) {
+        if (deletedLength > 0) target.delete(start, deletedLength);
+        if (insertedText.length > 0) target.insert(start, insertedText);
+      } else if (target instanceof YArray) {
+        if (deletedLength > 0) target.delete(start, deletedLength);
+        if (insertedText.length > 0) target.insert(start, insertedText.split(""));
+      }
+    } else {
+      if (insertedText.length > 0) {
+        if (isTextOp) {
+          this.doc.egWalker.localOp({
+            type: "text-insert",
+            path,
+            afterId: null,
+            text: insertedText,
+          });
+        } else {
+          this.doc.egWalker.localOp({
+            type: "array-insert",
+            path,
+            afterId: null,
+            values: insertedText.split(""),
+          });
+        }
+      }
+    }
+  }
+}
+````
+
+## File: packages/demo/interactive-test/main.ts
+````typescript
+import { Doc } from "@ddgll/ts-crdt";
+import { CrdtClient } from "@ddgll/ts-crdt/client";
+
+const textarea = document.getElementById("user1") as HTMLTextAreaElement;
+const replicaId = crypto.randomUUID();
+const doc = new Doc(replicaId);
+const client = new CrdtClient(doc);
+let isInitialized = false;
+
+// Disable the textarea until the client is initialized
+textarea.disabled = true;
+
+const urlParams = new URLSearchParams(window.location.search);
+const room = urlParams.get("room") || "default";
+const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+const wsUrl = `${protocol}//${window.location.host}/ws?room=${room}`;
+
+client.onMessage((type) => {
+  if (type === "snapshot") {
+    isInitialized = true;
+    textarea.disabled = false; // Enable input now
+    console.log("Client initialized.");
+  }
+  updateTextarea();
+});
+
+// Reconnection story: on every disconnect we open a fresh WebSocket and hand it
+// to the client via rebind(). The client keeps a queue of local edits across
+// sockets, so anything typed while offline is replayed to the server once the
+// new connection is established (and survives the reconnect snapshot load).
+let reconnectDelay = 500;
+let isFirstConnection = true;
+
+function connect() {
+  const ws = new WebSocket(wsUrl);
+
+  if (isFirstConnection) {
+    client.bind(ws);
+    isFirstConnection = false;
+  } else {
+    client.rebind(ws);
+  }
+
+  ws.onopen = () => {
+    console.log("Connected to server");
+    reconnectDelay = 500; // reset backoff on a successful connection
+  };
+
+  ws.onclose = () => {
+    console.log("Disconnected from server, will reconnect...");
+    textarea.disabled = true;
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 10_000);
+  };
+
+  ws.onerror = (error) => {
+    console.error("WebSocket error:", error);
+    textarea.disabled = true;
+  };
+}
+
+connect();
+
+function updateTextarea() {
+  const content = doc.getMap().getArray("content");
+  if (content) {
+    const text = content.toJSON().join("");
+    // Avoid resetting cursor position if text is the same
+    if (textarea.value !== text) {
+      textarea.value = text;
+    }
+  } else {
+    textarea.value = "";
+  }
+}
+
+textarea.addEventListener("input", () => {
+  if (!isInitialized || client.isApplyingRemoteChanges()) {
+    return;
+  }
+
+  client.syncText(["content"], textarea.value, "array");
+});
+````
+
 ## File: packages/demo/package.json
 ````json
 {
@@ -10403,10 +11276,21 @@ export class Doc {
 
 	/**
 	 * Performs garbage collection on the document to clean up tombstones and free memory.
-	 * 
+	 *
 	 * WARNING: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization.
 	 * It should only be called when all clients are guaranteed to receive a synchronized snapshot to prevent permanent replica divergence.
-	 * 
+	 *
+	 * A tombstone is only safe to gc when it is both (a) causally stable — every
+	 * replica has observed it — AND (b) not referenced as an insertion anchor
+	 * (`afterId`) by any event that has not yet been folded into the same
+	 * snapshot. Tombstones are RGA anchors, so dropping one that a future insert
+	 * still points at would strand that insert (it would append at the end
+	 * instead of at its intended position). Compaction satisfies (b) because an
+	 * insert can only anchor to an item its author had visible, so any event
+	 * anchored to a tombstone is necessarily causally before that tombstone's
+	 * deletion and is folded into the snapshot alongside it (see PLAN_10 and
+	 * `server/tests/compactionGcAnchorLoss.test.ts`).
+	 *
 	 * @param force Must be explicitly set to true to execute garbage collection.
 	 */
 	gc(force: boolean = false) {
@@ -11397,7 +12281,10 @@ export class YMap {
 	 * @returns A JSON representation of the map.
 	 */
 	toJSON(): Record<string, unknown> {
-		const obj: { [key: string]: unknown } = {};
+		// Use a null-prototype object so that assigning keys such as
+		// "__proto__" can never trigger a prototype setter (prototype
+		// pollution) regardless of what keys the map holds.
+		const obj: { [key: string]: unknown } = Object.create(null);
 		for (const [key, wrapper] of this._map.entries()) {
 			const value = wrapper.value;
 			if (value === undefined) continue;
@@ -11419,7 +12306,8 @@ export class YMap {
 	 * @returns A raw representation of the map.
 	 */
 	toSnapshot(): Record<string, unknown> {
-		const obj: { [key: string]: unknown } = {};
+		// Null-prototype object to avoid prototype pollution via crafted keys.
+		const obj: { [key: string]: unknown } = Object.create(null);
 		for (const [key, wrapper] of this._map.entries()) {
 			const value = wrapper.value;
 			let snapValue: unknown;
@@ -11632,8 +12520,12 @@ interface YTextItem {
  * A collaborative text type for rich-text editing.
  * It supports inserting text, deleting text, and applying formatting attributes.
  * 
- * **Note on Concurrency**: YText resolves concurrent index-based operations
- * via deterministic event replay using RGA-like stable IDs, preserving user intent.
+ * **Note on Concurrency**: YText converges by deterministic total-order replay
+ * of an RGA (see {@link rgaInsertIndex}); concurrent inserts sharing an anchor
+ * settle in ascending event-id order (the RGA tie-break) and **may interleave**.
+ * All replicas agree on the same result, but this is *not* the
+ * interleaving-avoiding Eg-walker algorithm, so concurrently-typed runs of text
+ * may be split into one another — user intent is not preserved in that case.
  */
 export class YText {
 	private _doc: Doc;
@@ -11954,10 +12846,16 @@ export class YText {
 
 	/**
 	 * Performs garbage collection by cleanly splicing out characters marked as deleted.
-	 * 
+	 *
 	 * WARNING: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization.
 	 * It should only be called when all clients are guaranteed to receive a synchronized snapshot to prevent permanent replica divergence.
-	 * 
+	 *
+	 * Tombstoned characters double as RGA insertion anchors (`rgaInsertIndex`
+	 * resolves an insert's position by locating its `afterId` in `_data`). A
+	 * tombstone is therefore only safe to remove when it is causally stable AND no
+	 * not-yet-folded event still references it as an anchor; otherwise that event
+	 * would fall back to append-at-end and silently reorder text. See PLAN_10.
+	 *
 	 * @param force Must be explicitly set to true to execute garbage collection.
 	 */
 	gc(force: boolean = false) {
@@ -12058,8 +12956,12 @@ interface YArrayItem {
  * A collaborative array that can be modified by multiple replicas.
  * It supports insertion, deletion, and replacement of elements.
  * 
- * **Note on Concurrency**: YArray resolves concurrent index-based operations
- * via deterministic event replay using RGA-like stable IDs, preserving user intent.
+ * **Note on Concurrency**: YArray converges by deterministic total-order replay
+ * of an RGA (see {@link rgaInsertIndex}); concurrent inserts sharing an anchor
+ * settle in ascending event-id order (the RGA tie-break) and **may interleave**.
+ * All replicas agree on the same result, but this is *not* the
+ * interleaving-avoiding Eg-walker algorithm, so contiguous concurrent runs are
+ * not guaranteed to stay contiguous — user intent is not preserved in that case.
  */
 export class YArray {
 	private _doc: Doc;
@@ -12260,10 +13162,16 @@ export class YArray {
 
 	/**
 	 * Performs garbage collection by cleanly splicing out elements marked as deleted.
-	 * 
+	 *
 	 * WARNING: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization.
 	 * It should only be called when all clients are guaranteed to receive a synchronized snapshot to prevent permanent replica divergence.
-	 * 
+	 *
+	 * Tombstones double as RGA insertion anchors (`rgaInsertIndex` resolves an
+	 * insert's position by locating its `afterId` in `_data`). A tombstone is
+	 * therefore only safe to remove when it is causally stable AND no
+	 * not-yet-folded event still references it as an anchor; otherwise that event
+	 * would fall back to append-at-end and silently reorder content. See PLAN_10.
+	 *
 	 * @param force Must be explicitly set to true to execute garbage collection.
 	 */
 	gc(force: boolean = false) {
@@ -12645,11 +13553,28 @@ export class EventGraphError extends Error {
 	}
 }
 
+/**
+ * Object keys that can trigger prototype pollution if written into a plain
+ * object literal. These are rejected as map keys and path segments at the
+ * validation boundary.
+ */
+const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
+ * Checks whether a string is a key that could pollute an object's prototype.
+ * @param key The candidate key or path segment.
+ * @returns True if the key is unsafe to use as an object key.
+ */
+function isDangerousKey(key: string): boolean {
+	return DANGEROUS_KEYS.has(key);
+}
+
 function isValidPath(path: unknown): path is (string | number)[] {
 	if (!Array.isArray(path)) return false;
-	return path.every(segment =>
-		typeof segment === "string" || typeof segment === "number"
-	);
+	return path.every(segment => {
+		if (typeof segment === "string") return !isDangerousKey(segment);
+		return typeof segment === "number";
+	});
 }
 
 function isRecord(obj: unknown): obj is Record<string, unknown> {
@@ -12676,14 +13601,12 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 		case MAP_SET_OP:
 			if (!isValidPath(op.path)) return false;
 			if (typeof op.key !== "string") return false;
-			if (op.key === "__proto__") return false;
-			if (op.key === "constructor") return false;
+			if (isDangerousKey(op.key)) return false;
 			break;
 		case MAP_DELETE_OP:
 			if (!isValidPath(op.path)) return false;
 			if (typeof op.key !== "string") return false;
-			if (op.key === "__proto__") return false;
-			if (op.key === "constructor") return false;
+			if (isDangerousKey(op.key)) return false;
 			break;
 		case ARRAY_INSERT_OP:
 			if (!isValidPath(op.path)) return false;
@@ -13158,7 +14081,7 @@ export function createEventGraph(): EventGraph {
 
 ## File: packages/core/src/server/crdtServer.ts
 ````typescript
-import { CrdtEvent, Doc, ServerMessage, isCrdtEvent } from "../index.js";
+import { CrdtEvent, Doc, ServerMessage, isCrdtEvent, generateReplicaId, SNAPSHOT_OP } from "../index.js";
 import { Logger, getLogger } from "../logger.js";
 import { PubSubAdapter } from "./pubSubAdapter.js";
 
@@ -13226,6 +14149,22 @@ export interface CrdtServerOptions {
    * only seeing console noise. Errors thrown by the hook itself are ignored.
    */
   onError?: (context: string, error: unknown) => void;
+  /**
+   * Single-writer/leader guard for clustered deployments. Compaction rewrites
+   * the *shared* repository (clear + re-save), so in a multi-process cluster
+   * only one process may perform it — otherwise two processes race to wipe and
+   * rewrite the same history, corrupting the persisted graph.
+   *
+   * When several {@link CrdtServer} processes serve the same room over a
+   * {@link PubSubAdapter}, provide this hook (backed by your own leader election
+   * / distributed lock) so it resolves truthy on exactly one process. A process
+   * for which it resolves falsy skips the repository rewrite; it still receives
+   * the resulting snapshot over pub/sub and rebuilds its in-memory state from
+   * it, so the whole cluster stays converged.
+   *
+   * Omit it for single-process deployments — compaction then always proceeds.
+   */
+  canCompact?: () => boolean | Promise<boolean>;
 }
 
 /**
@@ -13251,6 +14190,16 @@ export class CrdtServer {
   private compactionPromise: Promise<void> | null = null;
   private backgroundEventsBuffer: CrdtEvent[] | null = null;
   private serverSequenceNumber: number = 0;
+  /**
+   * Replica id used to mint snapshot event ids during compaction. It carries a
+   * per-instance random suffix so that two {@link CrdtServer} processes serving
+   * the same room over pub/sub can never mint the same snapshot id for
+   * different snapshot contents (which would make one silently drop the other's
+   * snapshot on {@link EventGraph.addEvent} and diverge permanently). It is
+   * regenerated per process; if snapshot-id determinism across restarts is
+   * required, persist and pass it back via the replica id yourself.
+   */
+  private snapshotReplicaId: string;
   private logger: Logger;
 
   /**
@@ -13296,6 +14245,9 @@ export class CrdtServer {
     this.pubSub = options?.pubSub;
     this.compactionThreshold = options?.compactionThreshold;
     this.options = options;
+    // Process-unique snapshot replica id (see field docs): prevents cross-process
+    // snapshot-id collisions when several servers cluster over pub/sub.
+    this.snapshotReplicaId = `server-${roomId}-${generateReplicaId()}`;
   }
 
   /**
@@ -13313,9 +14265,13 @@ export class CrdtServer {
         this.logger.info(`Loading ${events.length} events from the repository.`);
         this.doc.egWalker.integrateRemote(events);
         
-        // Initialize serverSequenceNumber based on existing server events
+        // Initialize serverSequenceNumber based on existing server snapshot
+        // events. Snapshot replica ids are `server-<room>[-<suffix>]`, so match
+        // on the prefix to cover both this instance's suffixed ids and any ids
+        // written by earlier instances/versions.
+        const serverReplicaPrefix = `server-${this.roomId}`;
         for (const event of events) {
-          if (event.replicaId === `server-${this.roomId}`) {
+          if (event.replicaId.startsWith(serverReplicaPrefix)) {
             const parts = event.id.split(':');
             if (parts.length === 2) {
               const seq = parseInt(parts[1], 10);
@@ -13350,6 +14306,23 @@ export class CrdtServer {
                 shouldBroadcast = false;
               } else {
                 this.doc.egWalker.integrateRemote([message.data]);
+              }
+            } else if (message.type === "snapshot") {
+              // Another process in the cluster compacted the shared history and
+              // rewrote the repository. Rebuild our in-memory state from its
+              // snapshot so we converge, instead of keeping a now-stale full
+              // graph whose events reference parents that peer just deleted.
+              const snapshotEventId = message.data.graph.events.find(
+                ([, event]) => event.op.type === SNAPSHOT_OP
+              )?.[0];
+              // Skip our own echo (or an already-applied snapshot): if the
+              // snapshot's root event is already in our graph we produced or
+              // integrated it, and re-loading would drop events that arrived
+              // after the snapshot was taken.
+              if (snapshotEventId && this.doc.egWalker.graph.getEvent(snapshotEventId)) {
+                shouldBroadcast = false;
+              } else {
+                this.doc.egWalker.loadStateSnapshot(message.data);
               }
             } else if (message.type === "awareness") {
               this.doc.egWalker.awarenessStates.set(message.data.replicaId, message.data.state);
@@ -13640,11 +14613,43 @@ export class CrdtServer {
 
   /**
    * Compacts the event graph to reduce memory usage and repository size.
+   *
+   * Rebuilds state at the last critical version, gc's the resulting snapshot to
+   * drop tombstones, and rewrites the remaining (post-critical-version) events to
+   * hang off the new snapshot event.
+   *
+   * gc'ing the snapshot is safe here even though tombstones are RGA anchors: an
+   * insert can only anchor (`afterId`) to an item its author had visible, so any
+   * event that anchors to a deleted item is causally *before* that deletion and
+   * hence an ancestor of the critical version — it is folded into the snapshot
+   * with its position already resolved, not left among the remaining events. No
+   * remaining event can reference a gc'd tombstone. This was the concern in
+   * PLAN_10; see `tests/compactionGcAnchorLoss.test.ts` for the reproduction
+   * attempt that confirms convergence is preserved.
    */
   async compact(): Promise<void> {
     if (this.isCompacting) return;
     this.isCompacting = true;
     try {
+      // Clustered single-writer guard. Compaction rewrites the shared
+      // repository, so in a multi-process cluster only the leader may run it;
+      // followers skip and instead rebuild from the leader's snapshot when it
+      // is published over pub/sub (see the subscribe handler). `isCompacting`
+      // is already set, so this also serialises against concurrent callers.
+      if (this.options?.canCompact) {
+        let allowed = false;
+        try {
+          allowed = await this.options.canCompact();
+        } catch (err) {
+          this.reportError("canCompact hook threw; skipping compaction", err);
+          allowed = false;
+        }
+        if (!allowed) {
+          this.isCompacting = false;
+          return;
+        }
+      }
+
       const version = this.doc.egWalker.graph.getLastCriticalVersion();
       if (version.length === 0) {
         this.isCompacting = false;
@@ -13657,7 +14662,8 @@ export class CrdtServer {
         this.doc.egWalker.graph.getEvents(version)
       );
       tempDoc.egWalker.integrateRemote(eventsToApply);
-      // Perform garbage collection to remove tombstones before saving snapshot
+      // Drop tombstones before saving the snapshot. Safe because no remaining
+      // event can anchor into a gc'd tombstone (see compact() docstring / PLAN_10).
       tempDoc.gc(true);
       const snap = tempDoc.getSnapshot();
       const snapshotState = isRecord(snap) ? snap : {};
@@ -13665,7 +14671,7 @@ export class CrdtServer {
       const { snapshotEvent, remainingEvents } = this.doc.egWalker.graph.compact(
         version,
         snapshotState,
-        `server-${this.roomId}`,
+        this.snapshotReplicaId,
         this.serverSequenceNumber++
       );
 
@@ -13711,6 +14717,14 @@ export class CrdtServer {
         if (client.readyState === 1) {
           client.send(snapshotMsgString);
         }
+      }
+
+      // Publish the snapshot to the rest of the cluster so peer processes rebuild
+      // from it instead of retaining a full graph that references history this
+      // process just rewrote in the shared repository. Peers dedupe our own echo
+      // via the snapshot event id (see the subscribe handler).
+      if (this.pubSub) {
+        await this.pubSub.publish(this.roomId, snapshotMsg);
       }
     } catch (err) {
       this.isCompacting = false;
@@ -13840,10 +14854,42 @@ export class EgWalkerError extends Error {
 }
 
 /**
- * The EgWalker (Event Graph Walker) is the core engine for processing and applying CRDT events.
- * It manages the event graph, replica state, and document modifications.
+ * The core engine for processing and applying CRDT events. It manages the
+ * event graph, replica state, and document modifications.
+ *
+ * **On the name.** "EgWalker" is short for "Event Graph Walker" and refers to
+ * the event-graph *data structure* this class walks — it is **not** an
+ * implementation of the Eg-walker algorithm (Kleppmann/Gentle, "Collaborative
+ * Text Editing with Eg-walker"), whose purpose is to avoid the RGA
+ * interleaving anomaly.
+ *
+ * **How convergence actually works.** All replicas reach Strong Eventual
+ * Consistency by *deterministic total-order replay*, not by the Eg-walker
+ * algorithm:
+ *  1. Every event is kept in a DAG.
+ *  2. Events are placed in one global total order sorted by event id
+ *     (`compareEventIds`: Lamport sequence first, then replicaId). An
+ *     incremental fast path re-applies only the changed suffix; a lower-Lamport
+ *     event arriving late triggers a re-sort and suffix re-apply.
+ *  3. Ops are replayed in that order, resolving maps with LWW and arrays/text
+ *     with RGA index resolution keyed on stable ids.
+ *
+ * Because every replica runs the identical sequence over identical state, they
+ * converge on byte-identical results. Concurrent inserts sharing an anchor
+ * settle in ascending event-id order (the RGA tie-break) and **may interleave**
+ * — this inherits RGA's behavior, so the interleaving anomaly is possible and
+ * user intent is *not* guaranteed to be preserved for concurrent runs. If
+ * non-interleaving prose editing matters, that is a feature gap to track
+ * separately (adopt Eg-walker/Fugue-style insertion), not a bug.
  */
 export class EgWalker {
+	/**
+	 * Default cap for {@link undoStack}. Chosen to comfortably cover the
+	 * concurrent suffix of a typical collaborative session (so the fast
+	 * incremental path is used in practice) while keeping retained closures
+	 * bounded. Tune per-instance via {@link setUndoStackLimit}.
+	 */
+	public static readonly DEFAULT_UNDO_STACK_LIMIT = 10_000;
 	private doc: Doc;
 	/** The underlying event graph instance. */
 	public graph: EventGraph;
@@ -13861,7 +14907,25 @@ export class EgWalker {
 	private eventListeners = new Set<(event: CrdtEvent, isLocal: boolean) => void>();
 	private beforeLocalApplyListeners = new Set<(event: CrdtEvent) => void>();
 	private cachedSortedEvents: CrdtEvent[] = [];
+	/**
+	 * Cache of per-event undo closures, keyed by event id, used purely to speed up
+	 * the incremental suffix-rebuild in {@link _ingestEvents}. It is NOT required
+	 * for correctness: whenever a needed undo is absent the ingest falls back to a
+	 * full rebuild from the sorted event list.
+	 *
+	 * Entries are held in most-recently-used order (a JS `Map` preserves insertion
+	 * order and {@link recordUndo} re-inserts on touch) and bounded by
+	 * {@link undoStackLimit}, so a long-lived client's undo cache never grows
+	 * without limit. Exceeding the cap evicts the least-recently-touched events,
+	 * which are the ones least likely to be part of a future concurrent suffix.
+	 */
 	private undoStack = new Map<EventID, () => void>();
+	/**
+	 * Upper bound on the number of retained undo closures. Bounds per-client
+	 * memory for long sessions with no snapshot reset; trades an occasional O(n)
+	 * full rebuild (when an evicted undo is needed) for a fixed memory ceiling.
+	 */
+	private undoStackLimit = EgWalker.DEFAULT_UNDO_STACK_LIMIT;
 	private isAtHead = true;
 	/**
 	 * Events received whose parents are not yet all present in the graph.
@@ -14012,7 +15076,7 @@ export class EgWalker {
 		// pre-operation state, so they can capture inverse-operation data.
 		this.notifyBeforeLocalApply(event);
 		const undo = this.applyNewEvent(event);
-		this.undoStack.set(event.id, undo);
+		this.recordUndo(event.id, undo);
 		this.notifyListeners(event, true);
 		return event;
 	}
@@ -14022,6 +15086,11 @@ export class EgWalker {
 	 * Returns the list of events that were actually new (not duplicates).
 	 */
 	private _ingestEvents(events: CrdtEvent[]): CrdtEvent[] {
+		// `cachedSortedEvents` borrows the graph's internal sorted array by
+		// reference (see EventGraph.getSortedEvents), which `addEvent` mutates in
+		// place below. This is the one site that needs a stable pre-ingest snapshot
+		// for the diff, so it is the only place we copy — everywhere else the
+		// walker borrows the graph's array to avoid a second full-length copy.
 		const oldSorted = [...this.cachedSortedEvents];
 		const addedEvents: CrdtEvent[] = [];
 
@@ -14102,7 +15171,7 @@ export class EgWalker {
 					// Redo phase
 					for (let i = diffIndex; i < newSorted.length; i++) {
 						const undo = this.applyNewEvent(newSorted[i]);
-						this.undoStack.set(newSorted[i].id, undo);
+						this.recordUndo(newSorted[i].id, undo);
 					}
 				} else {
 					// Fallback to full rebuild
@@ -14110,7 +15179,7 @@ export class EgWalker {
 					this.undoStack.clear();
 					for (const ev of newSorted) {
 						const undo = this.applyNewEvent(ev);
-						this.undoStack.set(ev.id, undo);
+						this.recordUndo(ev.id, undo);
 					}
 				}
 			} else {
@@ -14119,7 +15188,7 @@ export class EgWalker {
 				this.undoStack.clear();
 				for (const ev of newSorted) {
 					const undo = this.applyNewEvent(ev);
-					this.undoStack.set(ev.id, undo);
+					this.recordUndo(ev.id, undo);
 				}
 			}
 			this.cachedSortedEvents = newSorted;
@@ -14351,6 +15420,53 @@ export class EgWalker {
 	}
 
 	/**
+	 * Records an undo closure for an event, maintaining most-recently-used order
+	 * and enforcing {@link undoStackLimit}. Re-inserting an existing id moves it to
+	 * the MRU end; once the cap is exceeded the least-recently-touched entries are
+	 * evicted. Evicting a closure is always safe — a later ingest that needs a
+	 * missing undo simply falls back to a full rebuild.
+	 */
+	private recordUndo(id: EventID, undo: () => void): void {
+		// Delete-then-set so a touched id moves to the MRU (insertion) end.
+		this.undoStack.delete(id);
+		this.undoStack.set(id, undo);
+		while (this.undoStack.size > this.undoStackLimit) {
+			// Map iteration order is insertion order, so the first key is the
+			// least-recently-touched (oldest) entry.
+			const oldest = this.undoStack.keys().next().value;
+			if (oldest === undefined) break;
+			this.undoStack.delete(oldest);
+		}
+	}
+
+	/**
+	 * Sets the maximum number of undo closures retained for the incremental
+	 * suffix-rebuild optimization. Lower values bound memory more tightly at the
+	 * cost of more frequent full rebuilds; correctness is unaffected either way.
+	 * Immediately trims the stack if it currently exceeds the new limit.
+	 * @param limit A positive integer upper bound.
+	 */
+	setUndoStackLimit(limit: number): void {
+		if (!Number.isInteger(limit) || limit < 1) {
+			throw new EgWalkerError("undoStackLimit must be a positive integer");
+		}
+		this.undoStackLimit = limit;
+		while (this.undoStack.size > this.undoStackLimit) {
+			const oldest = this.undoStack.keys().next().value;
+			if (oldest === undefined) break;
+			this.undoStack.delete(oldest);
+		}
+	}
+
+	/**
+	 * Returns the number of undo closures currently retained. Useful for
+	 * observability and tests verifying the {@link undoStackLimit} bound.
+	 */
+	getUndoStackSize(): number {
+		return this.undoStack.size;
+	}
+
+	/**
 	 * Creates a snapshot of the current state of the document and event graph.
 	 * @returns A state snapshot object.
 	 */
@@ -14409,7 +15525,7 @@ export class EgWalker {
 		// Re-apply events in order
 		for (const event of sortedEvents) {
 			const undo = this.applyNewEvent(event);
-			this.undoStack.set(event.id, undo);
+			this.recordUndo(event.id, undo);
 		}
 
 		if (this.graph.isCriticalVersion(version)) {
