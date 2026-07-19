@@ -2,54 +2,65 @@ import { describe, it, expect } from "vitest";
 import { Doc } from "../doc.js";
 import { rgaInsertIndex, baseEventId } from "../rga.js";
 
+type Item = { id: string; originId: string | null; rightOriginId: string | null };
+const item = (id: string, originId: string | null = null, rightOriginId: string | null = null): Item => ({ id, originId, rightOriginId });
+const index = (data: Item[]) => new Map(data.map((it, i) => [it.id, i]));
+
 /**
- * These tests pin the RGA tie-break convention that YArray and YText share via
- * {@link rgaInsertIndex} (see PLAN_02). The convention is:
+ * These tests pin the YATA/right-origin integration that YArray and YText share
+ * via {@link rgaInsertIndex}. The convention is:
  *
- *   Among elements following the same anchor, a new insert is placed AFTER every
- *   element whose base event id is strictly smaller, and BEFORE the first element
- *   whose base event id is >= the inserting event id.
+ *   A new run is bounded on the left by its origin (`afterId`) and on the right
+ *   by its right origin (`beforeId`). Among elements that share the same left
+ *   origin (genuine concurrents), a new insert is placed AFTER every element
+ *   whose base event id is strictly smaller, and BEFORE the first element whose
+ *   base event id is >= the inserting event id.
  *
  * Because `compareEventIds` orders by Lamport timestamp first then replicaId,
  * concurrent inserts sharing an anchor (equal timestamps) settle into ascending
- * replicaId order.
+ * replicaId order, and interior inserts are pinned to the gap between their two
+ * origins instead of walking to the end.
  */
 describe("RGA tie-break convention", () => {
 	describe("rgaInsertIndex helper", () => {
-		it("returns 0 when there is no anchor (head insert)", () => {
-			const data = [{ id: "a:1:0" }, { id: "a:2:0" }];
-			const idIndex = new Map(data.map((it, i) => [it.id, i]));
-			expect(rgaInsertIndex(data, idIndex, null, "b:5")).toBe(0);
+		it("returns 0 for a head insert bounded by the first element", () => {
+			const data = [item("a:1:0"), item("a:2:0", "a:1:0")];
+			expect(rgaInsertIndex(data, index(data), null, "a:1:0", "b:5")).toBe(0);
 		});
 
-		it("appends when the anchor is not present", () => {
-			const data = [{ id: "a:1:0" }];
-			const idIndex = new Map(data.map((it, i) => [it.id, i]));
-			expect(rgaInsertIndex(data, idIndex, "missing:9:0", "b:5")).toBe(1);
+		it("pins an interior insert to the gap between its two origins", () => {
+			// "ab": inserting X between a and b (origin a, right origin b) lands at
+			// index 1 rather than walking to the end.
+			const data = [item("r:0:0"), item("r:1:0", "r:0:0")];
+			expect(rgaInsertIndex(data, index(data), "r:0:0", "r:1:0", "r:2")).toBe(1);
 		});
 
-		it("places a lower-id insert before a higher-id sibling of the same anchor", () => {
-			// Anchor is A (a:1:0). Sibling B (b:2:0) already follows it. Inserting
-			// C (c:2 — equal timestamp, replicaId 'c' > 'b') should go AFTER B.
-			const data = [{ id: "a:1:0" }, { id: "b:2:0" }];
-			const idIndex = new Map(data.map((it, i) => [it.id, i]));
-			expect(rgaInsertIndex(data, idIndex, "a:1:0", "c:2")).toBe(2);
+		it("falls back to the head when the origin is not present", () => {
+			// Only reachable when an anchor was gc'd without a synchronising
+			// snapshot; the result must at least be deterministic.
+			const data = [item("a:1:0")];
+			expect(rgaInsertIndex(data, index(data), "missing:9:0", null, "b:5")).toBe(0);
+		});
+
+		it("places a lower-id insert after a higher-id sibling of the same anchor", () => {
+			// Anchor A (a:1:0). Sibling B (b:2:0, origin A) already follows it.
+			// Inserting C (c:2 — equal timestamp, 'c' > 'b') goes AFTER B.
+			const data = [item("a:1:0"), item("b:2:0", "a:1:0")];
+			expect(rgaInsertIndex(data, index(data), "a:1:0", null, "c:2")).toBe(2);
 		});
 
 		it("places a lower replicaId insert before an already-present higher one", () => {
-			// Sibling is C (c:2:0). Inserting B (b:2 — same timestamp, 'b' < 'c')
-			// must land BEFORE C, i.e. right after the anchor.
-			const data = [{ id: "a:1:0" }, { id: "c:2:0" }];
-			const idIndex = new Map(data.map((it, i) => [it.id, i]));
-			expect(rgaInsertIndex(data, idIndex, "a:1:0", "b:2")).toBe(1);
+			// Sibling C (c:2:0, origin A). Inserting B (b:2 — same timestamp,
+			// 'b' < 'c') must land BEFORE C, i.e. right after the anchor.
+			const data = [item("a:1:0"), item("c:2:0", "a:1:0")];
+			expect(rgaInsertIndex(data, index(data), "a:1:0", null, "b:2")).toBe(1);
 		});
 
 		it("orders by Lamport timestamp ahead of replicaId", () => {
-			// Sibling z:1:0 has a smaller timestamp than the inserting a:2, so the
-			// new insert goes after it even though 'a' < 'z'.
-			const data = [{ id: "anchor:0:0" }, { id: "z:1:0" }];
-			const idIndex = new Map(data.map((it, i) => [it.id, i]));
-			expect(rgaInsertIndex(data, idIndex, "anchor:0:0", "a:2")).toBe(2);
+			// Sibling z:1:0 (origin anchor) has a smaller timestamp than the
+			// inserting a:2, so the new insert goes after it even though 'a' < 'z'.
+			const data = [item("anchor:0:0"), item("z:1:0", "anchor:0:0")];
+			expect(rgaInsertIndex(data, index(data), "anchor:0:0", null, "a:2")).toBe(2);
 		});
 	});
 

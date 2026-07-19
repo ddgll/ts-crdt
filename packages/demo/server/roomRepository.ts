@@ -1,5 +1,5 @@
 import { Repository } from "@ddgll/ts-crdt/server";
-import { CrdtEvent } from "@ddgll/ts-crdt";
+import { CrdtEvent, isCrdtEvent } from "@ddgll/ts-crdt";
 import { eq } from "drizzle-orm";
 import { db } from "./db.js";
 import * as schema from "./db/schema.js";

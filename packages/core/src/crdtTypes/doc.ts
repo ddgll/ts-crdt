@@ -73,6 +73,12 @@ export class Doc {
 			throw new Error("Garbage collection must be explicitly forced by passing true (e.g. gc(true)). Warning: Calling gc() permanently deletes tombstones and can cause CRDT desynchronization if clients are not fully synchronized via snapshots.");
 		}
 		this._root.gc(force);
+		// gc() splices tombstones out of each type's internal `_data`, which
+		// invalidates the by-value indices captured in the walker's incremental
+		// undo closures. Drop them so the next ingest rebuilds from the event graph
+		// (which still holds the folded history) instead of replaying a stale
+		// closure onto compacted data — see EgWalker.invalidateUndoCache.
+		this.egWalker.invalidateUndoCache();
 	}
 
 	/**

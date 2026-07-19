@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed (correctness)
+
+- **Interior insertion (sequence CRDTs).** `YArray`/`YText` inserts are now integrated with a right-origin (YATA/Fugue-style) rule bounded by both the left (`afterId`) and right (`beforeId`) neighbour. Previously any insert with index > 0 walked to the end of the sequence, so typing into the middle of text/array — even single-user — produced the wrong order, and concurrently-typed runs could interleave. Out-of-range insert indices now clamp to the end instead of the head.
+- **`Doc.gc()`** now invalidates the walker's incremental undo-closure cache (`EgWalker.invalidateUndoCache()`). Without this, a garbage-collect followed by a late concurrent event could duplicate elements and permanently diverge a replica from its own history.
+- **`UndoManager`** records an undo boundary even for groups whose operations are all non-invertible (formatting, container overwrite/delete). Previously such a group left no boundary, so a subsequent `undo()` destructively reverted an *older* group (e.g. undoing formatting deleted the underlying text).
+- **Client snapshot reconcile** now preserves *all* already-integrated events a recovery snapshot is missing (including peer events), not just this replica's own, preventing silent data loss on reconnect.
+- **Clock-poisoning defense.** `isCrdtEvent` bounds the Lamport sequence below the safe-integer ceiling, and `EgWalker.localOp` throws on a local id collision instead of silently dropping the event.
+
+### Fixed (server durability)
+
+- **`BufferedRepository.flush()`** now fully drains the buffer and coalesces concurrent callers, so events enqueued during an in-flight flush are no longer stranded and a shutdown flush no longer claims durability it has not achieved. Flush batches are epoch-tagged so a failed save cannot resurrect events an interleaved `clearEvents()` (compaction) removed.
+- **Compaction** (`CrdtServer.compact()`) is routed through the message queue so it can no longer interleave with an in-flight event save (which could persist an event with dangling parents).
+- **Idle eviction** is guarded by instance identity and its timer is cleared on reconnect, so a stale timer can no longer evict a fresh replacement instance for the same room.
+- **Awareness** payloads are size-capped and the number of replica ids per socket is bounded (memory-growth DoS); offline awareness deletes its entry across the cluster instead of retaining null tombstones.
+
+### Changed / migration notes
+
+- **Wire format.** `text-insert` / `array-insert` operations carry an optional `beforeId` (right origin), and compaction `snapshot` operations carry an optional `folded` state-vector (replicaId → highest folded sequence) that the client reconcile uses to distinguish events folded into the snapshot (skip) from events the server lost (re-integrate). Legacy events/snapshots without these fields still integrate (open-ended right origin / empty vector). Because the integration rule changed, replaying an existing event history renders interior insertions in their corrected order — **all peers must run the same version** to stay converged. Snapshots and the persisted `op` column round-trip the new fields automatically.
+- `CrdtClient.syncText` diffs on code-point boundaries, so emoji/astral edits no longer produce lone surrogates.
+
+### Fixed (docs / infra)
+
+- Corrected `INTEGRATION.md` (`handleWebSocket` arity, `saveEvents`, removed non-existent `doc.localInsert`), the core README `UndoManager` model, `agents.md` (vitest globals, `doc.js` import, `sqlite.db` path), and the demo README DB path + text-db variant.
+- Fixed the vitest coverage `include` (the `src/server/**` tree was excluded via a stale path), reinstated `workers: 1` for the e2e suite, added a demo `type-check` script (now covered by `pnpm -r run type-check`), and reordered the package `exports` conditions (`types` before `import`).
+
+---
+
 ## [0.2.0] - 2026-06-14
 
 ### Added

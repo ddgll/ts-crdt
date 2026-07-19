@@ -9,6 +9,7 @@
     "build:rich": "esbuild interactive-test/rich.ts --bundle --outfile=interactive-test/rich.js --format=esm",
     "build:index": "esbuild interactive-test/main.ts --bundle --outfile=interactive-test/main.js --format=esm",
     "build:text-db": "esbuild interactive-test/text-db.ts --bundle --outfile=interactive-test/text-db.js --format=esm",
+    "type-check": "tsc --noEmit",
     "e2e": "playwright test --config=./e2e/playwright.config.ts"
   },
   "dependencies": {

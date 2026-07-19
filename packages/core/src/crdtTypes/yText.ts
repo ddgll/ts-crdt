@@ -26,18 +26,29 @@ interface YTextItem {
 	char: string;
 	isDeleted: boolean;
 	attributes: Record<string, unknown>;
+	/** Id of the left neighbour at insert time (YATA left origin), or null at the head. */
+	originId: string | null;
+	/** Id of the right neighbour at insert time (YATA right origin), or null at the tail. */
+	rightOriginId: string | null;
 }
 
 /**
  * A collaborative text type for rich-text editing.
  * It supports inserting text, deleting text, and applying formatting attributes.
  * 
- * **Note on Concurrency**: YText converges by deterministic total-order replay
- * of an RGA (see {@link rgaInsertIndex}); concurrent inserts sharing an anchor
- * settle in ascending event-id order (the RGA tie-break) and **may interleave**.
- * All replicas agree on the same result, but this is *not* the
- * interleaving-avoiding Eg-walker algorithm, so concurrently-typed runs of text
- * may be split into one another — user intent is not preserved in that case.
+ * **Note on Concurrency**: YText converges by deterministic total-order replay,
+ * integrating inserts with a right-origin (YATA-style) rule shared via
+ * {@link rgaInsertIndex} so interior insertions land correctly and concurrently
+ * typed runs are not interleaved. All replicas reach byte-identical results.
+ *
+ * **Note on Unicode**: indices and lengths are in UTF-16 code units (like Yjs
+ * and JavaScript strings), and each code unit is a separately addressable RGA
+ * item. A `delete`/`format` range that starts or ends inside a surrogate pair
+ * therefore addresses half a pair; this is consistent across all replicas (no
+ * divergence) but can produce an ill-formed lone surrogate in {@link toString}.
+ * Callers editing astral characters (emoji, etc.) should snap ranges to
+ * code-point boundaries. Higher-level helpers such as `CrdtClient.syncText`
+ * already diff on code-point boundaries to avoid this.
  */
 export class YText {
 	private _doc: Doc;
@@ -86,23 +97,33 @@ export class YText {
 	 */
 	insert(index: number, text: string) {
 		if (text.length === 0) return;
+		// Capture both the left neighbour (`afterId`) and the right neighbour
+		// (`beforeId`) visible at the insertion point, so the insert is bounded on
+		// both sides at integration time (YATA/right-origin — see rgaInsertIndex).
 		let afterId: string | null = null;
-		if (index > 0) {
-			let count = 0;
-			for (let i = 0; i < this._data.length; i++) {
-				if (!this._data[i].isDeleted) {
-					count++;
-					if (count === index) {
-						afterId = this._data[i].id;
-						break;
-					}
-				}
+		let beforeId: string | null = null;
+		let lastVisibleId: string | null = null;
+		let k = 0;
+		for (let i = 0; i < this._data.length; i++) {
+			if (this._data[i].isDeleted) continue;
+			if (k === index - 1) afterId = this._data[i].id;
+			if (k === index) {
+				beforeId = this._data[i].id;
+				break;
 			}
+			lastVisibleId = this._data[i].id;
+			k++;
+		}
+		// Clamp an out-of-range index to the end rather than silently inserting at
+		// the head (afterId/beforeId would otherwise both be null).
+		if (index > 0 && afterId === null && beforeId === null) {
+			afterId = lastVisibleId;
 		}
 		this._doc.egWalker.localOp({
 			type: TEXT_INSERT_OP,
 			path: this._path,
 			afterId,
+			beforeId,
 			text,
 		});
 	}
@@ -171,18 +192,24 @@ export class YText {
 	 * @returns An undo closure.
 	 * @internal
 	 */
-	_applyInsert(eventId: string, afterId: string | null, text: string): () => void {
-		// RGA tie-breaking is shared with YArray via rgaInsertIndex so the
+	_applyInsert(eventId: string, afterId: string | null, beforeId: string | null, text: string): () => void {
+		// RGA/YATA integration is shared with YArray via rgaInsertIndex so the
 		// convergence-critical convention lives in exactly one place.
-		const insertIdx = rgaInsertIndex(this._data, this._idIndex, afterId, eventId);
+		const rightOriginId = beforeId ?? null;
+		const insertIdx = rgaInsertIndex(this._data, this._idIndex, afterId, rightOriginId, eventId);
 
 		const newItems: YTextItem[] = [];
+		const lastIdx = text.length - 1;
 		for (let i = 0; i < text.length; i++) {
 			newItems.push({
 				id: `${eventId}:${i}`,
 				char: text[i],
 				isDeleted: false,
-				attributes: {}
+				attributes: {},
+				// Within a run each character's origins are its run-neighbours; the
+				// run's outer boundaries carry the op's afterId/beforeId.
+				originId: i === 0 ? afterId : `${eventId}:${i - 1}`,
+				rightOriginId: i === lastIdx ? rightOriginId : `${eventId}:${i + 1}`,
 			});
 		}
 
@@ -278,19 +305,22 @@ export class YText {
 	 *   of the targets are present.
 	 * @internal
 	 */
-	_captureReinsert(targetIds: string[]): { afterId: string | null; text: string } | null {
+	_captureReinsert(targetIds: string[]): { afterId: string | null; beforeId: string | null; text: string } | null {
 		const idSet = new Set(targetIds);
 		let firstIdx = -1;
+		let lastIdx = -1;
 		let text = "";
 		for (let i = 0; i < this._data.length; i++) {
 			if (idSet.has(this._data[i].id)) {
 				if (firstIdx === -1) firstIdx = i;
+				lastIdx = i;
 				text += this._data[i].char;
 			}
 		}
 		if (firstIdx === -1) return null;
 		const afterId = firstIdx > 0 ? this._data[firstIdx - 1].id : null;
-		return { afterId, text };
+		const beforeId = lastIdx < this._data.length - 1 ? this._data[lastIdx + 1].id : null;
+		return { afterId, beforeId, text };
 	}
 
 	/**
@@ -401,7 +431,7 @@ export class YText {
 		text: string,
 	): YText {
 		const ytext = new YText(doc, path);
-		ytext._applyInsert(`snapshot:${path.join('.')}`, null, text);
+		ytext._applyInsert(`snapshot:${path.join('.')}`, null, null, text);
 		return ytext;
 	}
 
@@ -420,12 +450,16 @@ export class YText {
 	): YText {
 		const ytext = new YText(doc, path);
 		ytext._data = snapshot.map((item) => {
-			if (!isYTextSnapshotItem(item)) return { id: "", char: "", isDeleted: true, attributes: {} };
+			if (!isYTextSnapshotItem(item)) return { id: "", char: "", isDeleted: true, attributes: {}, originId: null, rightOriginId: null };
 			return {
 				id: item.id,
 				char: item.char,
 				isDeleted: item.isDeleted,
-				attributes: { ...item.attributes }
+				attributes: { ...item.attributes },
+				// Legacy snapshots predate right-origin metadata; default to null so
+				// they still integrate deterministically after loading.
+				originId: typeof item.originId === "string" ? item.originId : null,
+				rightOriginId: typeof item.rightOriginId === "string" ? item.rightOriginId : null,
 			};
 		});
 		for (let i = 0; i < ytext._data.length; i++) {
@@ -439,6 +473,6 @@ function isRecord(val: unknown): val is Record<string, unknown> {
 	return typeof val === "object" && val !== null && !Array.isArray(val);
 }
 
-function isYTextSnapshotItem(val: unknown): val is { id: string, char: string, isDeleted: boolean, attributes: Record<string, unknown> } {
+function isYTextSnapshotItem(val: unknown): val is { id: string, char: string, isDeleted: boolean, attributes: Record<string, unknown>, originId?: unknown, rightOriginId?: unknown } {
 	return isRecord(val) && typeof val.id === "string" && typeof val.char === "string" && typeof val.isDeleted === "boolean" && isRecord(val.attributes);
 }

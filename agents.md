@@ -43,7 +43,7 @@ Local development relies on compiling core in watch mode and running the demo se
    - **Rich Text Editor Demo**: [http://localhost:3000/rich.html](http://localhost:3000/rich.html)
 
 ### Database Migrations
-- **SQLite Database File**: The database file `sqlite.db` is stored at the root of the workspace.
+- **SQLite Database File**: The database file `sqlite.db` is stored in the demo package (`packages/demo/sqlite.db`), resolved relative to the demo server's working directory at runtime.
 - **Automatic Migration**: Migrations are applied programmatically on startup by Hono in `packages/demo/server/server.ts` utilizing Drizzle's `migrate` helper. You do not need to manually run CLI commands to apply migrations when developing.
 
 ---
@@ -57,19 +57,20 @@ You can run tests from the root of the monorepo:
 ```bash
 pnpm test
 ```
-This command runs `vitest --run` across all workspace projects.
+This command runs each workspace package's own `test` script (`pnpm -r run test`); the core package runs `vitest --run`.
 
 ### Writing New Tests
 All core unit tests are located inside `packages/core/src/[component]/tests/` (e.g. `packages/core/src/crdtTypes/tests/`).
 
 #### Testing Guidelines:
 1. **Naming Conventions**: Test files must end with `.test.ts` (e.g., `MyCrdtType.test.ts`).
-2. **Framework Functions**: Use `describe`, `it`, and `expect` from Vitest (globals are enabled in `vitest.config.ts`).
+2. **Framework Functions**: Import `describe`, `it`, and `expect` explicitly from Vitest — globals are **disabled** (`globals: false` in `vitest.config.ts`).
 3. **Independent Replicas**: When testing CRDT merges, instantiate multiple independent `Doc` instances (e.g., `const doc1 = new Doc("replica-1")`) and simulate network syncing using `doc.egWalker.integrateRemote()`.
 
 #### Test Template Example:
 ```typescript
-import { Doc } from "../Doc.js";
+import { describe, it, expect } from "vitest";
+import { Doc } from "../doc.js";
 
 describe("My Custom CRDT Feature", () => {
   it("should merge changes deterministically between replicas", () => {

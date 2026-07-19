@@ -91,9 +91,14 @@ text.format(0, 5, { bold: true }); // formats "Hello" with bold: true
 
 ## Advanced Features
 
-### Undo/Redo (Non-Destructive History)
+### Undo/Redo (Inverse-Operation Model)
 
-`UndoManager` tracks document versions in the event graph to perform non-destructive history traversal.
+`UndoManager` implements undo by computing the **inverse** of each local operation
+and applying it as a new event — not by rewinding the document to a historical
+version. Because an undo replicates like any other operation, it commutes with
+concurrent remote edits: undoing a local change removes exactly that change and
+nothing else, even when remote events build on top of it. `track()` closes the
+current group of local operations into a single undoable unit.
 
 ```typescript
 import { UndoManager } from "@ddgll/ts-crdt";
@@ -101,10 +106,10 @@ import { UndoManager } from "@ddgll/ts-crdt";
 const undoManager = new UndoManager(doc.egWalker);
 
 map.set("counter", 1);
-undoManager.track(); // Snapshot version 1
+undoManager.track(); // close group 1
 
 map.set("counter", 2);
-undoManager.track(); // Snapshot version 2
+undoManager.track(); // close group 2
 
 undoManager.undo();
 console.log(map.get("counter")); // 1
@@ -112,6 +117,11 @@ console.log(map.get("counter")); // 1
 undoManager.redo();
 console.log(map.get("counter")); // 2
 ```
+
+> Some operations cannot be expressed as a single inverse and are therefore
+> skipped by undo: text **formatting**, overwriting/deleting a value that held a
+> nested **container**, and snapshot loads. Undoing an array/text delete revives
+> the content as a *new* insertion (new element identities).
 
 ### Presence & Ephemeral Awareness
 

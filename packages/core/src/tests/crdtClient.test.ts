@@ -218,6 +218,99 @@ describe("CrdtClient", () => {
       client.unbind();
     });
 
+    it("preserves already-integrated peer events a snapshot is missing (B3)", () => {
+      const doc = new Doc("client-A");
+      const client = new CrdtClient(doc);
+
+      const serverDoc = new Doc("server");
+      serverDoc.getMap().set("base", "1");
+      const initialSnapshot = serverDoc.egWalker.getStateSnapshot();
+
+      const ws = new MockClientWebSocket();
+      client.bind(ws);
+      ws.emit("message", {
+        data: JSON.stringify({ type: "snapshot", data: initialSnapshot }),
+      });
+
+      // A peer's event, relayed to the client and integrated, that the server has
+      // NOT persisted yet (e.g. it was still in a buffer when the server restarted).
+      const peer = new Doc("peer");
+      peer.egWalker.integrateRemote(serverDoc.egWalker.graph.getAllEvents());
+      peer.getMap().set("peerKey", "peerVal");
+      const peerEvent = peer.egWalker.graph
+        .getAllEvents()
+        .find((e) => e.op.type === "map-set" && (e.op as { key: string }).key === "peerKey")!;
+      ws.emit("message", {
+        data: JSON.stringify({ type: "event", data: peerEvent }),
+      });
+      expect(doc.getMap().get("peerKey")).toBe("peerVal");
+
+      // The client makes its own edit causally after the peer's.
+      doc.getMap().set("mine", "x");
+
+      // A recovery snapshot arrives that lacks BOTH the peer event and our edit.
+      ws.emit("message", {
+        data: JSON.stringify({ type: "snapshot", data: initialSnapshot }),
+      });
+
+      // Neither the peer's data nor our own is lost, and our edit is not orphaned.
+      expect(doc.getMap().get("peerKey")).toBe("peerVal");
+      expect(doc.getMap().get("mine")).toBe("x");
+      expect(doc.egWalker.getPendingEventCount()).toBe(0);
+
+      client.unbind();
+    });
+
+    it("does not duplicate content when receiving a post-compaction snapshot", () => {
+      // Mirrors e2e/reconnect-compacted.spec.ts: the client already holds the
+      // full pre-compaction history; the compaction snapshot FOLDS that history
+      // into a snapshot event. The reconcile must not re-apply folded events
+      // (that duplicates text), while still re-integrating genuinely-new ones.
+      const doc = new Doc("client-A");
+      const client = new CrdtClient(doc);
+
+      // Server builds some text history and the client is fully synced.
+      const serverDoc = new Doc("server-r");
+      serverDoc.getMap().getText("t").insert(0, "Initial state. ");
+      serverDoc.getMap().getText("t").insert(15, "Client 1 kept editing. ");
+
+      const ws = new MockClientWebSocket();
+      client.bind(ws);
+      ws.emit("message", {
+        data: JSON.stringify({ type: "snapshot", data: serverDoc.egWalker.getStateSnapshot() }),
+      });
+      expect(doc.getMap().getText("t").toString()).toBe(
+        "Initial state. Client 1 kept editing. ",
+      );
+
+      // Server compacts: fold everything into a snapshot event.
+      const version = serverDoc.egWalker.graph.getLastCriticalVersion();
+      const snapState = serverDoc.getSnapshot();
+      const { snapshotEvent, remainingEvents } = serverDoc.egWalker.graph.compact(
+        version,
+        snapState as Record<string, unknown>,
+        "server-r-snap",
+        0,
+      );
+      const compactedDoc = new Doc("server-r2");
+      compactedDoc.egWalker.integrateRemote([snapshotEvent, ...remainingEvents]);
+
+      // The client receives the post-compaction snapshot.
+      ws.emit("message", {
+        data: JSON.stringify({ type: "snapshot", data: compactedDoc.egWalker.getStateSnapshot() }),
+      });
+
+      // No duplication, and nothing stuck pending.
+      expect(doc.getMap().getText("t").toString()).toBe(
+        "Initial state. Client 1 kept editing. ",
+      );
+      expect(doc.egWalker.getPendingEventCount()).toBe(0);
+      // Nothing was re-sent to the server either (all held events were folded).
+      expect(ws.sentData.length).toBe(0);
+
+      client.unbind();
+    });
+
     it("does not echo foreign events back after loading a snapshot", () => {
       const doc = new Doc("client-B");
       const client = new CrdtClient(doc);
@@ -323,6 +416,24 @@ describe("CrdtClient", () => {
       const versionAfter = doc.egWalker.getVersion();
       client.syncText(["text-content"], "word", "text");
       expect(doc.egWalker.getVersion()).toEqual(versionAfter);
+    });
+
+    it("syncText never produces lone surrogates across emoji edits (B10)", () => {
+      const cases: [string, string][] = [
+        ["x👍y", "x👎y"],
+        ["👍", "👍👎"],
+        ["a😀b", "ab"],
+        ["hello", "héllo"],
+      ];
+      for (const [oldT, newT] of cases) {
+        const doc = new Doc("r");
+        const client = new CrdtClient(doc);
+        client.syncText(["t"], oldT, "text");
+        client.syncText(["t"], newT, "text");
+        const got = doc.getMap().getText("t").toString();
+        expect(got).toBe(newT);
+        expect(got.isWellFormed()).toBe(true);
+      }
     });
   });
 });

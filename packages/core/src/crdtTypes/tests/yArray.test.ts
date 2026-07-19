@@ -24,6 +24,22 @@ describe("YArray", () => {
     expect(arr.get(1)).toEqual("b");
   });
 
+  it("inserts into the middle of the array (right-origin / YATA)", () => {
+    const doc = new Doc();
+    const arr = doc.getMap().getArray("my-array");
+    arr.insert(0, [1, 2, 3]);
+    arr.insert(1, ["X"]);
+    expect(arr.toJSON()).toEqual([1, "X", 2, 3]);
+  });
+
+  it("clamps an out-of-range insert index to the end", () => {
+    const doc = new Doc();
+    const arr = doc.getMap().getArray("my-array");
+    arr.insert(0, ["a", "b"]);
+    arr.insert(99, ["X"]);
+    expect(arr.toJSON()).toEqual(["a", "b", "X"]);
+  });
+
   it("should break ties deterministically using sequence numbers (RGA)", () => {
     // We construct events directly to simulate sequence numbers 9 and 10
     // "replica:10" < "replica:9" in string comparison, but 10 > 9 in numeric

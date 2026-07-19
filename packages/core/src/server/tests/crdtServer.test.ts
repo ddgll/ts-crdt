@@ -474,4 +474,97 @@ describe("serverInstances TTL", () => {
     // Verify it was removed
     expect(serverInstances.has("ttl-room")).toBe(false);
   });
+
+  it("rejects oversized awareness payloads (B13)", async () => {
+    const repo = new MockRepository();
+    const ws = new MockWebSocket();
+    const errors: string[] = [];
+    const server = new CrdtServer("aw-size-room", repo, {
+      maxAwarenessStateSize: 100,
+      onError: (ctx) => errors.push(ctx),
+    });
+    await server.handleConnection(ws);
+
+    ws.emit(
+      "message",
+      JSON.stringify({ type: "awareness", data: { replicaId: "peer", state: "x".repeat(500) } }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(server.getDoc().egWalker.getAwareness("peer")).toBeUndefined();
+    expect(errors.some((e) => /awareness/i.test(e))).toBe(true);
+  });
+
+  it("caps the number of replica ids a single socket may register for awareness (B13)", async () => {
+    const repo = new MockRepository();
+    const ws = new MockWebSocket();
+    const server = new CrdtServer("aw-count-room", repo, { maxReplicaIdsPerSocket: 2 });
+    await server.handleConnection(ws);
+
+    for (const id of ["p1", "p2", "p3"]) {
+      ws.emit(
+        "message",
+        JSON.stringify({ type: "awareness", data: { replicaId: id, state: { at: id } } }),
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(server.getDoc().egWalker.getAwareness("p1")).toBeDefined();
+    expect(server.getDoc().egWalker.getAwareness("p2")).toBeDefined();
+    expect(server.getDoc().egWalker.getAwareness("p3")).toBeUndefined();
+  });
+
+  it("a stale idle timer does not evict a replacement instance (B8)", async () => {
+    const repo = new MockRepository();
+    const wsA = new MockWebSocket();
+    await handleWebSocket(wsA, "b8-room", repo, { idleTimeoutMs: 30 });
+    const serverA = serverInstances.get("b8-room");
+    expect(serverA).toBeDefined();
+
+    // Last socket disconnects -> schedules A's idle-eviction timer.
+    wsA.emit("close");
+
+    // Before A's timer fires, the room is evicted and a fresh client reconnects,
+    // creating a brand-new instance B that owns the room key.
+    serverInstances.delete("b8-room");
+    const wsB = new MockWebSocket();
+    await handleWebSocket(wsB, "b8-room", repo, { idleTimeoutMs: 30 });
+    const serverB = serverInstances.get("b8-room");
+    expect(serverB).not.toBe(serverA);
+
+    // Wait past A's (stale) timer.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // B — which still has a live socket — must NOT have been evicted by A's timer.
+    expect(serverInstances.get("b8-room")).toBe(serverB);
+
+    // Cleanup.
+    wsB.emit("close");
+    serverInstances.delete("b8-room");
+  });
+
+  it("compaction invoked externally serialises and leaves no orphaned events (B6)", async () => {
+    const repo = new MockRepository();
+    const ws = new MockWebSocket();
+    const server = new CrdtServer("b6-room", repo, { compactionThreshold: 1000 });
+    await server.handleConnection(ws);
+
+    // Push several events, then compact via the public (queue-routed) entry.
+    const base = server.getDoc().egWalker.getVersion();
+    void base;
+    for (let i = 0; i < 3; i++) {
+      server.getDoc().getMap().getArray("content").insert(0, [`v${i}`]);
+    }
+    await server.compact();
+
+    // A few more events after compaction.
+    server.getDoc().getMap().getArray("content").insert(0, ["after"]);
+
+    // Persist current graph, then reload into a fresh server: every persisted
+    // event must be replayable (no dangling parents => zero pending).
+    await repo.saveEvents(server.getDoc().egWalker.graph.getAllEvents());
+    const reload = new CrdtServer("b6-room", repo);
+    await reload.initialize();
+    expect(reload.getDoc().egWalker.getPendingEventCount()).toBe(0);
+  });
 });

@@ -22,7 +22,8 @@ sequenceDiagram
     Server->>DB: getEvents() (Load room history)
     DB-->>Server: Return stored CrdtEvents
     Client A->>WS: Connects to /ws?room=room-1
-    WS->>Server: handleWebSocket(socket, repository)
+    WS->>Server: handleWebSocket(socket, roomId, repository, options?)
+    Note over Server,DB: Repository persists via saveEvents(events[])
     Server-->>Client A: Send "snapshot" message (Full document state)
     Core A->>Core A: loadStateSnapshot(data)
     Note over Client A: Editor unlocked for editing
@@ -32,7 +33,7 @@ sequenceDiagram
     Core A->>Core A: Calculates character diff & updates local Doc
     Core A->>WS: Sends CrdtEvent (via WebSocket.send)
     WS->>Server: Receives ClientMessage (CrdtEvent)
-    Server->>DB: saveEvent(event) (Persist event to database)
+    Server->>DB: saveEvents(events) (Persist integrated events to database)
     Server->>Server: integrateRemote([event])
     Server-->>Client B: Broadcast "event" message to Client B
     Client B->>Client B: integrateRemote([event]) if replicaId matches
@@ -61,14 +62,20 @@ function getRoomRepository(roomId: string): Repository {
           .from(schema.events)
           .where(eq(schema.events.roomId, roomId));
       },
-      saveEvent: async (event) => {
-        await db.insert(schema.events).values({
-          id: event.id,
-          roomId,
-          replicaId: event.replicaId,
-          parents: event.parents,
-          op: event.op,
-        });
+      saveEvents: async (events) => {
+        if (events.length === 0) return;
+        await db
+          .insert(schema.events)
+          .values(
+            events.map((event) => ({
+              id: event.id,
+              roomId,
+              replicaId: event.replicaId,
+              parents: event.parents,
+              op: event.op,
+            })),
+          )
+          .onConflictDoNothing();
       },
       clearEvents: async () => {
         await db.delete(schema.events).where(eq(schema.events.roomId, roomId));
@@ -93,7 +100,7 @@ app.get(
       onOpen: (_evt, webSocket) => {
         if (!webSocket.raw) return;
         // Delegate WebSocket synchronization and broadcasting to server library
-        handleWebSocket(webSocket.raw, roomRepository).catch(console.error);
+        handleWebSocket(webSocket.raw, roomId, roomRepository, { pubSub }).catch(console.error);
       },
     };
   })
@@ -244,21 +251,21 @@ class InMemoryTextRepository implements Repository {
 
     if (row && row.content !== null) {
       const textArray = row.content.split("");
-      this.doc.localInsert(["content"], 0, textArray);
+      this.doc.getMap().getArray("content").insert(0, textArray);
     } else {
-      this.doc.localInsert(["content"], 0, []);
+      this.doc.getMap().getArray("content").insert(0, []);
     }
 
     this.initialized = true;
     return this.doc.egWalker.graph.getAllEvents();
   }
 
-  async saveEvent(event: CrdtEvent): Promise<void> {
+  async saveEvents(events: CrdtEvent[]): Promise<void> {
     if (!this.initialized) {
       await this.getEvents();
     }
 
-    this.doc.egWalker.integrateRemote([event]);
+    this.doc.egWalker.integrateRemote(events);
 
     const content = this.doc.getMap().getArray("content");
     const text = content ? content.toJSON().join("") : "";

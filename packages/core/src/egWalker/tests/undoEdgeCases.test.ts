@@ -42,4 +42,60 @@ describe("Undo Edge Cases", () => {
 		expect(doc1.getMap().get("key1")).toBe("val1_a");
 		expect(doc1.getMap().get("key4")).toBe("val4_b"); // User B's edit is untouched
 	});
+
+	// B5: a group whose ops all have null inverses (formatting, container
+	// overwrite/delete) must still record an undo boundary, so undo() consumes
+	// that boundary as a no-op instead of reaching back and reverting an OLDER
+	// group's state destructively.
+	describe("non-invertible group boundaries (B5)", () => {
+		it("undoing a format-only group leaves the underlying text intact", () => {
+			const doc = new Doc("r1");
+			const text = doc.getMap().getText("t");
+			const undo = new UndoManager(doc.egWalker);
+
+			text.insert(0, "hello");
+			undo.track();
+			text.format(0, 5, { bold: true });
+			undo.track();
+
+			undo.undo(); // undoing the format group must NOT delete "hello"
+			expect(text.toString()).toBe("hello");
+
+			undo.undo(); // now the insert group is undone
+			expect(text.toString()).toBe("");
+
+			undo.redo();
+			expect(text.toString()).toBe("hello");
+		});
+
+		it("undoing a container-overwrite group is a no-op, not corruption", () => {
+			const doc = new Doc("r1");
+			const map = doc.getMap();
+			const undo = new UndoManager(doc.egWalker);
+
+			map.getMap("nest").set("a", 1);
+			undo.track();
+			map.set("nest", "overwritten");
+			undo.track();
+
+			undo.undo();
+			// Pre-fix this reverted an OLDER group and produced { nest: {} }; now it
+			// consumes the non-invertible boundary and leaves state unchanged.
+			expect(map.get("nest")).toBe("overwritten");
+		});
+
+		it("a track() with no intervening op stays a true no-op", () => {
+			const doc = new Doc("r1");
+			const arr = doc.getMap().getArray("arr");
+			const undo = new UndoManager(doc.egWalker);
+
+			arr.insert(0, ["x"]);
+			undo.track();
+			undo.track(); // spurious
+			undo.track(); // spurious
+
+			undo.undo(); // must still undo the real insert
+			expect(arr.toJSON()).toEqual([]);
+		});
+	});
 });

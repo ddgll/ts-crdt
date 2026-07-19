@@ -45,8 +45,15 @@ export interface ArrayInsertOperation {
 	type: typeof ARRAY_INSERT_OP;
 	/** The path to the target array within the document. */
 	path: (string | number)[];
-	/** The ID of the element to insert after. Null indicates insertion at the beginning. */
+	/** The ID of the element to insert after (left origin). Null indicates insertion at the beginning. */
 	afterId: string | null;
+	/**
+	 * The ID of the element to insert before (right origin). Null indicates
+	 * insertion at the end. Optional for backwards compatibility: events created
+	 * before right-origin support carry no `beforeId` and are integrated as if it
+	 * were null (open-ended to the right).
+	 */
+	beforeId?: string | null;
 	/** The values to insert. */
 	values: unknown[];
 }
@@ -65,8 +72,15 @@ export interface TextInsertOperation {
 	type: typeof TEXT_INSERT_OP;
 	/** The path to the target text object within the document. */
 	path: (string | number)[];
-	/** The ID of the character to insert after. Null indicates insertion at the beginning. */
+	/** The ID of the character to insert after (left origin). Null indicates insertion at the beginning. */
 	afterId: string | null;
+	/**
+	 * The ID of the character to insert before (right origin). Null indicates
+	 * insertion at the end. Optional for backwards compatibility: events created
+	 * before right-origin support carry no `beforeId` and are integrated as if it
+	 * were null (open-ended to the right).
+	 */
+	beforeId?: string | null;
 	/** The text to insert. */
 	text: string;
 }
@@ -96,6 +110,17 @@ export interface SnapshotOperation {
 	type: typeof SNAPSHOT_OP;
 	/** The serialized document state. */
 	state: Record<string, unknown>;
+	/**
+	 * State-vector of the history folded into this snapshot: for each replica id,
+	 * the highest Lamport sequence number among the folded events (including any
+	 * previously-folded snapshot's vector, so it accumulates across successive
+	 * compactions). Lets a client receiving this snapshot distinguish an event
+	 * that is *already reflected* in the snapshot state (covered by the vector —
+	 * must NOT be re-applied, or content duplicates) from one the server has
+	 * genuinely never seen (not covered — safe to re-integrate). Optional for
+	 * backwards compatibility with snapshots created before this field existed.
+	 */
+	folded?: Record<string, number>;
 }
 
 export type Op =
@@ -160,6 +185,31 @@ function isRecord(obj: unknown): obj is Record<string, unknown> {
 }
 
 /**
+ * Upper bound on the Lamport sequence number embedded in an event id. Bounding
+ * it at validation time stops a crafted/corrupt event from poisoning a replica's
+ * clock past the safe-integer range: once `sequenceNumber` saturates near
+ * `Number.MAX_SAFE_INTEGER`, `sequenceNumber++` stops advancing and the replica
+ * mints colliding ids, silently dropping its own subsequent events. The margin
+ * leaves head-room for many further local operations.
+ */
+export const MAX_EVENT_SEQUENCE = Number.MAX_SAFE_INTEGER - 2 ** 20;
+
+/**
+ * Validates an event id of the form `replicaId:sequence`, additionally bounding
+ * the sequence number to {@link MAX_EVENT_SEQUENCE}.
+ */
+function isValidEventId(id: unknown): id is string {
+	if (typeof id !== "string") return false;
+	const match = /^[^:]+:(\d+)$/.exec(id);
+	if (!match) return false;
+	const seqStr = match[1];
+	// Reject absurdly long sequences cheaply before the numeric bound check.
+	if (seqStr.length > 16) return false;
+	const seq = Number(seqStr);
+	return Number.isSafeInteger(seq) && seq <= MAX_EVENT_SEQUENCE;
+}
+
+/**
  * Type guard to check if an unknown value is a valid CrdtEvent.
  * @param event The value to check.
  * @returns True if the value is a CrdtEvent, false otherwise.
@@ -169,10 +219,10 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 		return false;
 	}
 	const e = event;
-	if (typeof e.id !== "string" || !/^[^:]+:\d+$/.test(e.id)) return false;
+	if (!isValidEventId(e.id)) return false;
 	if (typeof e.replicaId !== "string") return false;
 	if (!Array.isArray(e.parents)) return false;
-	if (!e.parents.every((p: unknown) => typeof p === "string" && /^[^:]+:\d+$/.test(p))) return false;
+	if (!e.parents.every((p: unknown) => isValidEventId(p))) return false;
 	if (!isRecord(e.op)) return false;
 	const op = e.op;
 	switch (op.type) {
@@ -189,6 +239,8 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 		case ARRAY_INSERT_OP:
 			if (!isValidPath(op.path)) return false;
 			if (op.afterId !== null && typeof op.afterId !== "string") return false;
+			// `beforeId` is optional (legacy events omit it); when present it must be null or a string.
+			if (op.beforeId !== undefined && op.beforeId !== null && typeof op.beforeId !== "string") return false;
 			if (!Array.isArray(op.values)) return false;
 			break;
 		case ARRAY_DELETE_OP:
@@ -198,6 +250,8 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 		case TEXT_INSERT_OP:
 			if (!isValidPath(op.path)) return false;
 			if (op.afterId !== null && typeof op.afterId !== "string") return false;
+			// `beforeId` is optional (legacy events omit it); when present it must be null or a string.
+			if (op.beforeId !== undefined && op.beforeId !== null && typeof op.beforeId !== "string") return false;
 			if (typeof op.text !== "string") return false;
 			break;
 		case TEXT_FORMAT_OP:
@@ -211,6 +265,13 @@ export function isCrdtEvent(event: unknown): event is CrdtEvent {
 			break;
 		case SNAPSHOT_OP:
 			if (!isRecord(op.state)) return false;
+			// `folded` is optional; when present it must map replica ids to numbers.
+			if (op.folded !== undefined) {
+				if (!isRecord(op.folded)) return false;
+				for (const v of Object.values(op.folded)) {
+					if (typeof v !== "number" || !Number.isFinite(v)) return false;
+				}
+			}
 			break;
 		default:
 			return false;
@@ -601,6 +662,32 @@ export class EventGraph {
 		snapshotReplicaId: string,
 		snapshotSequence: number
 	): { snapshotEvent: CrdtEvent; remainingEvents: CrdtEvent[] } {
+		const eventsToKeep = this.getChangesSince(version);
+		const keptIds = new Set(eventsToKeep.map((e) => e.id));
+
+		// State-vector of the folded history: per replica, the highest Lamport seq
+		// among the events being replaced by this snapshot. Prior snapshots folded
+		// here contribute their own accumulated vectors, so coverage survives
+		// successive compactions. Built as a Map and converted with
+		// Object.fromEntries so a replica id like "__proto__" becomes an own data
+		// property instead of touching the prototype.
+		const foldedVector = new Map<string, number>();
+		const observeFolded = (replicaId: string, seq: number) => {
+			if (!Number.isFinite(seq)) return;
+			const prev = foldedVector.get(replicaId);
+			if (prev === undefined || prev < seq) foldedVector.set(replicaId, seq);
+		};
+		for (const ev of this.events.values()) {
+			if (keptIds.has(ev.id)) continue;
+			const [rid, seqStr] = ev.id.split(":");
+			observeFolded(rid, parseInt(seqStr, 10));
+			if (ev.op.type === SNAPSHOT_OP && ev.op.folded) {
+				for (const [rid2, seq2] of Object.entries(ev.op.folded)) {
+					if (typeof seq2 === "number") observeFolded(rid2, seq2);
+				}
+			}
+		}
+
 		const newSnapshotEvent: CrdtEvent = {
 			id: `${snapshotReplicaId}:${snapshotSequence}`,
 			replicaId: snapshotReplicaId,
@@ -608,12 +695,11 @@ export class EventGraph {
 			op: {
 				type: SNAPSHOT_OP,
 				state: snapshotState,
+				folded: Object.fromEntries(foldedVector),
 			},
 		};
 
-		const eventsToKeep = this.getChangesSince(version);
 		const newEvents: CrdtEvent[] = [];
-		const keptIds = new Set(eventsToKeep.map((e) => e.id));
 
 		for (const ev of eventsToKeep) {
 			const newParents = ev.parents.map((p) =>

@@ -47,6 +47,13 @@ export class UndoManager {
 	/** Inverses of local ops observed since the last {@link track} boundary. */
 	private currentGroup: Op[] = [];
 	/**
+	 * Whether any user op occurred since the last boundary, even one that produced
+	 * no inverse (format, container overwrite/delete, snapshot). Without this, a
+	 * group made up solely of non-invertible ops would push no boundary, so the
+	 * next {@link undo} would reach back and destructively revert an *older* group.
+	 */
+	private hadLocalOpSinceBoundary = false;
+	/**
 	 * While the manager is itself applying ops (during undo/redo), captured
 	 * inverses are routed here instead of into {@link currentGroup}, so an undo's
 	 * own events populate the redo stack rather than being treated as user edits.
@@ -84,6 +91,7 @@ export class UndoManager {
 		}
 		// A fresh user operation invalidates any pending redo history.
 		this.redoStack = [];
+		this.hadLocalOpSinceBoundary = true;
 		if (inverse) this.currentGroup.unshift(inverse);
 	}
 
@@ -93,11 +101,16 @@ export class UndoManager {
 	 * A no-op if no undoable operations have been performed since the last call.
 	 */
 	public track() {
-		if (this.currentGroup.length === 0) {
+		// Push a boundary whenever the user performed *any* op since the last one,
+		// even if none was invertible — an empty group makes the matching undo a
+		// deliberate no-op instead of reaching into an older group. A track() with
+		// no intervening op stays a true no-op.
+		if (this.currentGroup.length === 0 && !this.hadLocalOpSinceBoundary) {
 			return;
 		}
 		this.undoStack.push(this.currentGroup);
 		this.currentGroup = [];
+		this.hadLocalOpSinceBoundary = false;
 		this.redoStack = [];
 	}
 
@@ -107,10 +120,13 @@ export class UndoManager {
 	 * follow the undone operations — are left untouched.
 	 */
 	public undo() {
-		// Any operations performed since the last track() form an implicit group.
-		if (this.currentGroup.length > 0) {
+		// Any operations performed since the last track() form an implicit group —
+		// including a group of only non-invertible ops (empty inverse list), so undo
+		// consumes that boundary as a no-op rather than reverting an older group.
+		if (this.currentGroup.length > 0 || this.hadLocalOpSinceBoundary) {
 			this.undoStack.push(this.currentGroup);
 			this.currentGroup = [];
+			this.hadLocalOpSinceBoundary = false;
 		}
 		if (this.undoStack.length === 0) {
 			return;
@@ -200,6 +216,7 @@ export class UndoManager {
 					type: ARRAY_INSERT_OP,
 					path: op.path,
 					afterId: cap.afterId,
+					beforeId: cap.beforeId,
 					values: cap.values,
 				};
 			}
@@ -212,6 +229,7 @@ export class UndoManager {
 					type: TEXT_INSERT_OP,
 					path: op.path,
 					afterId: cap.afterId,
+					beforeId: cap.beforeId,
 					text: cap.text,
 				};
 			}

@@ -1,4 +1,4 @@
-import { Doc, ServerMessage, YArray, YText, YMap, CrdtEvent } from "./index.js";
+import { Doc, ServerMessage, YArray, YText, YMap, CrdtEvent, SNAPSHOT_OP } from "./index.js";
 import { Logger, getLogger } from "./logger.js";
 
 /**
@@ -71,28 +71,61 @@ export class CrdtClient {
 
         if (parsed.type === "snapshot") {
           // A snapshot load is destructive: it replaces the whole graph with the
-          // server's state. Capture this replica's own events first so local-only
-          // edits (e.g. produced while disconnected) are not erased by the load.
+          // server's state. Capture ALL locally-held events first — not just our
+          // own — so that peer events we had already integrated and displayed but
+          // which the incoming snapshot happens to lack (e.g. a server restart
+          // with an un-flushed buffer, or a stale cross-process snapshot) are not
+          // silently erased by the load.
           const replicaId = this.doc.egWalker.getReplicaId();
-          const localEventsBefore = this.doc.egWalker.graph
-            .getAllEvents()
-            .filter((event) => event.replicaId === replicaId);
+          const localEventsBefore = this.doc.egWalker.graph.getAllEvents();
 
           this.doc.egWalker.loadStateSnapshot(parsed.data);
 
-          // Re-integrate any of our events the incoming snapshot doesn't yet
-          // contain, and re-queue them for delivery. This makes reconnection
-          // converge (offline edits survive) instead of dropping data.
+          // Re-integrate every locally-held event the snapshot doesn't contain so
+          // reconnection converges (offline edits and already-seen peer edits
+          // survive) instead of dropping data. Only our OWN events are re-queued
+          // for delivery to the server; peer events are re-delivered by their
+          // authors / the server as needed.
+          //
+          // Crucially, an event absent from the snapshot's graph is NOT
+          // necessarily lost: server compaction FOLDS history into a snapshot
+          // event whose `folded` state-vector records, per replica, the highest
+          // sequence it absorbed. An event covered by that vector is already
+          // reflected in the snapshot state — re-applying it would duplicate
+          // content — so only events beyond the vector are re-integrated.
           const graph = this.doc.egWalker.graph;
+          const foldedVector = new Map<string, number>();
+          for (const ev of graph.getAllEvents()) {
+            if (ev.op.type === SNAPSHOT_OP && ev.op.folded) {
+              for (const [rid, seq] of Object.entries(ev.op.folded)) {
+                if (typeof seq === "number") {
+                  const prev = foldedVector.get(rid);
+                  if (prev === undefined || prev < seq) foldedVector.set(rid, seq);
+                }
+              }
+            }
+          }
+          const isFoldedIntoSnapshot = (event: CrdtEvent): boolean => {
+            const [rid, seqStr] = event.id.split(":");
+            const covered = foldedVector.get(rid);
+            return covered !== undefined && parseInt(seqStr, 10) <= covered;
+          };
           const missing = localEventsBefore.filter(
-            (event) => graph.getEvent(event.id) === undefined,
+            (event) =>
+              graph.getEvent(event.id) === undefined &&
+              !isFoldedIntoSnapshot(event),
           );
           if (missing.length > 0) {
             this.doc.egWalker.integrateRemote(missing);
-            for (const event of missing) {
+            const ownMissing = missing.filter(
+              (event) => event.replicaId === replicaId,
+            );
+            for (const event of ownMissing) {
               this.enqueueLocalEvent(event);
             }
-            this.flushPendingEvents();
+            if (ownMissing.length > 0) {
+              this.flushPendingEvents();
+            }
           }
 
           this.notifyListeners("snapshot", parsed.data);
@@ -287,30 +320,37 @@ export class CrdtClient {
       return;
     }
 
-    let start = 0;
+    // Diff on code points (not UTF-16 code units) so an edit that changes one
+    // emoji to another never cuts through a surrogate pair and leaves a lone
+    // surrogate. The resulting boundaries are then expressed in code-unit offsets
+    // (`start`/`deletedLength`), which is what YText/YArray indices use.
+    const oldCP = Array.from(oldText);
+    const newCP = Array.from(newText);
+
+    let prefix = 0;
     while (
-      start < oldText.length &&
-      start < newText.length &&
-      oldText[start] === newText[start]
+      prefix < oldCP.length &&
+      prefix < newCP.length &&
+      oldCP[prefix] === newCP[prefix]
     ) {
-      start++;
+      prefix++;
     }
 
-    let oldEnd = oldText.length;
-    let newEnd = newText.length;
+    let oldEndCP = oldCP.length;
+    let newEndCP = newCP.length;
     while (
-      oldEnd > start &&
-      newEnd > start &&
-      oldEnd <= oldText.length &&
-      newEnd <= newText.length &&
-      oldText[oldEnd - 1] === newText[newEnd - 1]
+      oldEndCP > prefix &&
+      newEndCP > prefix &&
+      oldCP[oldEndCP - 1] === newCP[newEndCP - 1]
     ) {
-      oldEnd--;
-      newEnd--;
+      oldEndCP--;
+      newEndCP--;
     }
 
-    const deletedLength = oldEnd - start;
-    const insertedText = newText.substring(start, newEnd);
+    // Code-unit offset of the prefix and the code-unit length of the deleted span.
+    const start = oldCP.slice(0, prefix).join("").length;
+    const deletedLength = oldCP.slice(prefix, oldEndCP).join("").length;
+    const insertedText = newCP.slice(prefix, newEndCP).join("");
 
     if (target) {
       if (target instanceof YText) {

@@ -88,12 +88,11 @@ export class EgWalkerError extends Error {
  *     with RGA index resolution keyed on stable ids.
  *
  * Because every replica runs the identical sequence over identical state, they
- * converge on byte-identical results. Concurrent inserts sharing an anchor
- * settle in ascending event-id order (the RGA tie-break) and **may interleave**
- * — this inherits RGA's behavior, so the interleaving anomaly is possible and
- * user intent is *not* guaranteed to be preserved for concurrent runs. If
- * non-interleaving prose editing matters, that is a feature gap to track
- * separately (adopt Eg-walker/Fugue-style insertion), not a bug.
+ * converge on byte-identical results. Sequence inserts (YArray/YText) are
+ * integrated with a right-origin (YATA/Fugue-style) rule that bounds each insert
+ * by both its left and right neighbours (see {@link rgaInsertIndex}), so interior
+ * insertions land correctly and concurrently-typed runs stay contiguous rather
+ * than interleaving.
  */
 export class EgWalker {
 	/**
@@ -281,6 +280,17 @@ export class EgWalker {
 		
 		if (!this.isAtHead) {
 			this.rebuildStateAtVersion(this.graph.getVersion());
+		}
+
+		// A locally-minted id must be unique. If it already exists, our Lamport
+		// clock failed to advance (e.g. it was poisoned toward MAX_SAFE_INTEGER by a
+		// crafted remote event, so `sequenceNumber++` saturated). Fail loudly rather
+		// than let `addEvent` silently drop the duplicate while we still apply the op
+		// locally — that path loses the event on every other replica forever.
+		if (this.graph.getEvent(event.id)) {
+			throw new EgWalkerError(
+				`Local event id collision: ${event.id}. The replica's sequence clock did not advance (possible clock poisoning).`,
+			);
 		}
 
 		this.graph.addEvent(event);
@@ -569,7 +579,7 @@ export class EgWalker {
 				break;
 			case ARRAY_INSERT_OP:
 				if (target instanceof YArray) {
-					undoActions.push(target._applyInsert(event.id, op.afterId, op.values));
+					undoActions.push(target._applyInsert(event.id, op.afterId, op.beforeId ?? null, op.values));
 				}
 				break;
 			case ARRAY_DELETE_OP:
@@ -580,7 +590,7 @@ export class EgWalker {
 
 			case TEXT_INSERT_OP:
 				if (target instanceof YText) {
-					undoActions.push(target._applyInsert(event.id, op.afterId, op.text));
+					undoActions.push(target._applyInsert(event.id, op.afterId, op.beforeId ?? null, op.text));
 				}
 				break;
 			case TEXT_FORMAT_OP:
@@ -677,6 +687,22 @@ export class EgWalker {
 	 */
 	getUndoStackSize(): number {
 		return this.undoStack.size;
+	}
+
+	/**
+	 * Discards the cached per-event undo closures, forcing the next ingest to take
+	 * the full-rebuild path instead of the incremental undo/redo suffix path.
+	 *
+	 * This must be called after any out-of-band mutation of a CRDT type's internal
+	 * `_data` that the closures were captured against — most notably {@link Doc.gc},
+	 * which splices tombstones out and thereby invalidates the by-value indices the
+	 * closures hold. Skipping this lets a later concurrent event drive an undo
+	 * closure with a stale index, duplicating or dropping elements (permanent
+	 * divergence). The full rebuild is safe because it replays events from the graph
+	 * (which still contains the folded history), reconstructing any tombstones.
+	 */
+	invalidateUndoCache(): void {
+		this.undoStack.clear();
 	}
 
 	/**

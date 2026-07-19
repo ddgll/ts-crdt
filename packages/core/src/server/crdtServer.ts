@@ -55,6 +55,10 @@ export interface CrdtServerOptions {
   maxValueSize?: number;
   /** Maximum events per second per socket. Default: 100 */
   maxEventsPerSecond?: number;
+  /** Maximum serialized size in bytes of a single awareness state payload. Default: 100KB */
+  maxAwarenessStateSize?: number;
+  /** Maximum number of distinct replica ids a single socket may register awareness for. Default: 100 */
+  maxReplicaIdsPerSocket?: number;
   /** Time in milliseconds to wait before removing an idle server from the global map. Default: 30,000 */
   idleTimeoutMs?: number;
   /** Optional logger for diagnostics. Defaults to the process-wide logger (see {@link setLogger}). */
@@ -107,6 +111,12 @@ export class CrdtServer {
   private compactionPromise: Promise<void> | null = null;
   private backgroundEventsBuffer: CrdtEvent[] | null = null;
   private serverSequenceNumber: number = 0;
+  /**
+   * Pending idle-eviction timer scheduled when the last socket disconnects.
+   * Retained so a reconnection can cancel it, preventing both timer accumulation
+   * and a stale timer from evicting a replacement instance for the same room.
+   */
+  private idleEvictionTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Replica id used to mint snapshot event ids during compaction. It carries a
    * per-instance random suffix so that two {@link CrdtServer} processes serving
@@ -242,7 +252,14 @@ export class CrdtServer {
                 this.doc.egWalker.loadStateSnapshot(message.data);
               }
             } else if (message.type === "awareness") {
-              this.doc.egWalker.awarenessStates.set(message.data.replicaId, message.data.state);
+              // A null state signals the replica went offline: delete the entry
+              // instead of retaining a growing set of null tombstones across the
+              // cluster (the local disconnect path deletes; mirror that here).
+              if (message.data.state === null) {
+                this.doc.egWalker.awarenessStates.delete(message.data.replicaId);
+              } else {
+                this.doc.egWalker.awarenessStates.set(message.data.replicaId, message.data.state);
+              }
             }
 
             if (shouldBroadcast) {
@@ -281,8 +298,14 @@ export class CrdtServer {
    * Sends the current state snapshot to the client and sets up event listeners to replicate changes.
    */
   async handleConnection(socket: MinimalWebSocket): Promise<void> {
+    // Cancel any pending idle-eviction: this instance is being reused.
+    if (this.idleEvictionTimer) {
+      clearTimeout(this.idleEvictionTimer);
+      this.idleEvictionTimer = null;
+    }
+
     await this.initialize();
-    
+
     this.sockets.add(socket);
 
     // Send state snapshot to the newly connected client
@@ -323,11 +346,33 @@ export class CrdtServer {
 
           if (parsed.type === "awareness") {
             const { replicaId, state } = parsed.data;
-            
+
+            // Awareness is an unauthenticated, unbounded payload path (unlike
+            // events it carries no per-op size caps), so bound it here to prevent
+            // memory-growth DoS: reject oversized states and cap the number of
+            // distinct replica ids a single socket may register.
+            if (typeof replicaId !== "string") return;
+            const maxAwarenessSize = this.options?.maxAwarenessStateSize ?? 100 * 1024;
+            if (JSON.stringify(state ?? null).length > maxAwarenessSize) {
+              this.reportError(
+                "Rejected oversized awareness state",
+                new Error(`awareness state exceeds ${maxAwarenessSize} bytes`),
+              );
+              return;
+            }
+
             let ids = this.socketReplicaIds.get(socket);
             if (!ids) {
               ids = new Set();
               this.socketReplicaIds.set(socket, ids);
+            }
+            const maxReplicaIds = this.options?.maxReplicaIdsPerSocket ?? 100;
+            if (!ids.has(replicaId) && ids.size >= maxReplicaIds) {
+              this.reportError(
+                "Rejected awareness: too many replica ids for one socket",
+                new Error(`socket exceeded ${maxReplicaIds} replica ids`),
+              );
+              return;
             }
             ids.add(replicaId);
 
@@ -427,7 +472,9 @@ export class CrdtServer {
           if (this.compactionThreshold && this.eventCountSinceCompaction >= this.compactionThreshold) {
             if (!this.isCompacting) {
               this.eventCountSinceCompaction = 0;
-              await this.compact();
+              // Already inside a queued task: call the implementation directly
+              // (enqueuing would deadlock against this task draining the queue).
+              await this.runCompaction();
             }
           }
         } catch (err) {
@@ -467,6 +514,15 @@ export class CrdtServer {
           }
         }
 
+        // Re-check after the await: a client may have reconnected during the
+        // flush window (handleConnection sees `initialized` still true and adds
+        // its socket). If so, do NOT tear down the subscription / reset init state
+        // underneath the now-live socket, or it would silently stop receiving
+        // pub/sub-relayed peer edits.
+        if (this.sockets.size > 0) {
+          return;
+        }
+
         // Unsubscribe from Pub/Sub
         if (this.unsubscribeFromPubSub) {
           this.unsubscribeFromPubSub();
@@ -475,9 +531,17 @@ export class CrdtServer {
 
         this.initialized = false;
         this.initializingPromise = null;
-        
-        setTimeout(() => {
-          if (this.sockets.size === 0) {
+
+        if (this.idleEvictionTimer) {
+          clearTimeout(this.idleEvictionTimer);
+        }
+        this.idleEvictionTimer = setTimeout(() => {
+          this.idleEvictionTimer = null;
+          // Only evict if still idle AND this exact instance still owns the room
+          // key. Without the identity check a stale timer could delete a fresh
+          // replacement instance (created after an evict/reset), splitting the
+          // room across two live servers with no shared state.
+          if (this.sockets.size === 0 && serverInstances.get(this.roomId) === this) {
             serverInstances.delete(this.roomId);
           }
         }, this.options?.idleTimeoutMs ?? 30_000);
@@ -543,8 +607,34 @@ export class CrdtServer {
    * remaining event can reference a gc'd tombstone. This was the concern in
    * PLAN_10; see `tests/compactionGcAnchorLoss.test.ts` for the reproduction
    * attempt that confirms convergence is preserved.
+   *
+   * Runs through the single message queue so it can never interleave with an
+   * in-flight `saveEvents` from an event task — otherwise a concurrent compaction
+   * could clear/rewrite the repository between an event's integration and its
+   * persistence, leaving a stale event (with pre-compaction parents) written into
+   * the just-cleared store. The internal threshold trigger already runs inside a
+   * queued task and calls {@link runCompaction} directly to avoid self-deadlock.
    */
   async compact(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.messageQueue.push(async () => {
+        try {
+          await this.runCompaction();
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      });
+      this.processQueue().catch((err) => this.logger.error(err));
+    });
+  }
+
+  /**
+   * The compaction implementation. Must only be invoked from within the message
+   * queue (via {@link compact} or the in-queue threshold trigger) so it is
+   * serialised against event persistence.
+   */
+  private async runCompaction(): Promise<void> {
     if (this.isCompacting) return;
     this.isCompacting = true;
     try {
@@ -616,6 +706,11 @@ export class CrdtServer {
               await this.repository.saveEvents(bufferToSave);
             }
           } catch (err) {
+            // The rewrite failed, so the persisted store may lag the in-memory
+            // graph. This is NOT state loss: every event here is already
+            // integrated into `this.doc`, and the next compaction rewrites the
+            // full graph, re-persisting everything (self-healing). Only durability
+            // across a process crash before the next compaction is at risk.
             this.reportError("Error during background compaction DB I/O", err);
           } finally {
             this.backgroundEventsBuffer = null;

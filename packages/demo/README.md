@@ -12,17 +12,18 @@ A real-time collaborative text and rich-text editing workspace that demonstrates
   - Node WebSocket middleware (`@hono/node-ws`) integrated with `@ddgll/ts-crdt/server`.
 - **Database & ORM**: 
   - [Drizzle ORM](https://orm.drizzle.team/) for migrations and queries.
-  - **SQLite** for persisting CRDT event history (`sqlite.db` at the root of the workspace).
+  - **SQLite** for persisting CRDT event history (`packages/demo/sqlite.db`, resolved relative to the demo server's working directory).
 
 ---
 
 ## Features Showcase
 
-1. **Collaborative Textarea Demo**: Synchronizes simple character insertions and deletions inside a default `<textarea>`.
-2. **Collaborative Rich-Text Demo**: Synchronizes bold, italics, headers, lists, and structural formats inside a Tiptap editor.
-3. **Multi-Room Collaboration**: Isolates editors based on the `?room=` URL query parameter. The server handles room mappings dynamically.
-4. **Persistent Sync**: Server-side Hono WebSocket processes retrieve past events from SQLite on start to reconstruct exact document histories.
-5. **Robust E2E Suite**: Pre-configured Playwright tests simulating multiple isolated clients and network connectivity loss.
+1. **Collaborative Textarea Demo** (`index.html`): Synchronizes simple character insertions and deletions inside a default `<textarea>`.
+2. **Collaborative Rich-Text Demo** (`rich.html`): Synchronizes bold, italics, headers, lists, and structural formats inside a Tiptap editor.
+3. **Text-DB Demo** (`text-db.html`, served over the `/ws-text` endpoint): A textarea variant backed by an in-memory text repository, used to exercise the alternate persistence path.
+4. **Multi-Room Collaboration**: Isolates editors based on the `?room=` URL query parameter. The server handles room mappings dynamically.
+5. **Persistent Sync**: Server-side Hono WebSocket processes retrieve past events from SQLite on start to reconstruct exact document histories.
+6. **Robust E2E Suite**: Pre-configured Playwright tests simulating multiple isolated clients and network connectivity loss.
 
 ---
 

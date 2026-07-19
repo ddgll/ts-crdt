@@ -14,18 +14,21 @@ interface YArrayItem {
 	id: string;
 	value: unknown;
 	isDeleted: boolean;
+	/** Id of the left neighbour at insert time (YATA left origin), or null at the head. */
+	originId: string | null;
+	/** Id of the right neighbour at insert time (YATA right origin), or null at the tail. */
+	rightOriginId: string | null;
 }
 
 /**
  * A collaborative array that can be modified by multiple replicas.
  * It supports insertion, deletion, and replacement of elements.
  * 
- * **Note on Concurrency**: YArray converges by deterministic total-order replay
- * of an RGA (see {@link rgaInsertIndex}); concurrent inserts sharing an anchor
- * settle in ascending event-id order (the RGA tie-break) and **may interleave**.
- * All replicas agree on the same result, but this is *not* the
- * interleaving-avoiding Eg-walker algorithm, so contiguous concurrent runs are
- * not guaranteed to stay contiguous — user intent is not preserved in that case.
+ * **Note on Concurrency**: YArray converges by deterministic total-order replay,
+ * integrating inserts with a right-origin (YATA-style) rule shared via
+ * {@link rgaInsertIndex} so interior insertions land correctly and concurrently
+ * inserted runs are kept contiguous (not interleaved). All replicas reach
+ * identical results.
  */
 export class YArray {
 	private _doc: Doc;
@@ -61,24 +64,38 @@ export class YArray {
 	 * @param values The elements to insert.
 	 */
 	insert(index: number, values: unknown[]) {
+		// NOTE: an empty `values` array is intentionally NOT short-circuited: the
+		// server seeds a room by calling `getArray("content").insert(0, [])` to
+		// materialise the container node as a replayable event (see
+		// CrdtServer.initialize). Unlike YText.insert, the empty case is load-bearing.
+		// Capture both the left neighbour (`afterId`) and right neighbour
+		// (`beforeId`) visible at the insertion point so the insert is bounded on
+		// both sides at integration time (YATA/right-origin — see rgaInsertIndex).
 		let afterId: string | null = null;
-		if (index > 0) {
-			let count = 0;
-			for (let i = 0; i < this._data.length; i++) {
-				if (!this._data[i].isDeleted) {
-					count++;
-					if (count === index) {
-						afterId = this._data[i].id;
-						break;
-					}
-				}
+		let beforeId: string | null = null;
+		let lastVisibleId: string | null = null;
+		let k = 0;
+		for (let i = 0; i < this._data.length; i++) {
+			if (this._data[i].isDeleted) continue;
+			if (k === index - 1) afterId = this._data[i].id;
+			if (k === index) {
+				beforeId = this._data[i].id;
+				break;
 			}
+			lastVisibleId = this._data[i].id;
+			k++;
 		}
-		
+		// Clamp an out-of-range index to the end rather than silently inserting at
+		// the head (afterId/beforeId would otherwise both be null).
+		if (index > 0 && afterId === null && beforeId === null) {
+			afterId = lastVisibleId;
+		}
+
 		this._doc.egWalker.localOp({
 			type: ARRAY_INSERT_OP,
 			path: this._path,
 			afterId,
+			beforeId,
 			values,
 		});
 	}
@@ -128,15 +145,21 @@ export class YArray {
 	 * @returns An undo closure.
 	 * @internal
 	 */
-	_applyInsert(eventId: string, afterId: string | null, values: unknown[]): () => void {
-		// RGA tie-breaking is shared with YText via rgaInsertIndex so the
+	_applyInsert(eventId: string, afterId: string | null, beforeId: string | null, values: unknown[]): () => void {
+		// RGA/YATA integration is shared with YText via rgaInsertIndex so the
 		// convergence-critical convention lives in exactly one place.
-		const insertIdx = rgaInsertIndex(this._data, this._idIndex, afterId, eventId);
+		const rightOriginId = beforeId ?? null;
+		const insertIdx = rgaInsertIndex(this._data, this._idIndex, afterId, rightOriginId, eventId);
 
+		const lastIdx = values.length - 1;
 		const newItems: YArrayItem[] = values.map((val, i) => ({
 			id: `${eventId}:${i}`,
 			value: val,
-			isDeleted: false
+			isDeleted: false,
+			// Within a run each element's origins are its run-neighbours; the run's
+			// outer boundaries carry the op's afterId/beforeId.
+			originId: i === 0 ? afterId : `${eventId}:${i - 1}`,
+			rightOriginId: i === lastIdx ? rightOriginId : `${eventId}:${i + 1}`,
 		}));
 
 		this._data.splice(insertIdx, 0, ...newItems);
@@ -209,19 +232,22 @@ export class YArray {
 	 *   none of the targets are present.
 	 * @internal
 	 */
-	_captureReinsert(targetIds: string[]): { afterId: string | null; values: unknown[] } | null {
+	_captureReinsert(targetIds: string[]): { afterId: string | null; beforeId: string | null; values: unknown[] } | null {
 		const idSet = new Set(targetIds);
 		const values: unknown[] = [];
 		let firstIdx = -1;
+		let lastIdx = -1;
 		for (let i = 0; i < this._data.length; i++) {
 			if (idSet.has(this._data[i].id)) {
 				if (firstIdx === -1) firstIdx = i;
+				lastIdx = i;
 				values.push(this._data[i].value);
 			}
 		}
 		if (firstIdx === -1) return null;
 		const afterId = firstIdx > 0 ? this._data[firstIdx - 1].id : null;
-		return { afterId, values };
+		const beforeId = lastIdx < this._data.length - 1 ? this._data[lastIdx + 1].id : null;
+		return { afterId, beforeId, values };
 	}
 
 	/**
@@ -382,7 +408,9 @@ export class YArray {
 			return {
 				id: `snapshot:${path.join('.')}:${i}`,
 				value: parsedValue,
-				isDeleted: false
+				isDeleted: false,
+				originId: null,
+				rightOriginId: null,
 			};
 		});
 		for (let i = 0; i < arr._data.length; i++) {
@@ -407,7 +435,7 @@ export class YArray {
 	): YArray {
 		const arr = new YArray(doc, path);
 		arr._data = snapshot.map((itemData, i) => {
-			if (!isSnapshotItem(itemData)) return { id: "", value: null, isDeleted: true };
+			if (!isSnapshotItem(itemData)) return { id: "", value: null, isDeleted: true, originId: null, rightOriginId: null };
 			const itemPath = [...path, i];
 			let parsedValue = itemData.value;
 			if (
@@ -450,7 +478,11 @@ export class YArray {
 			return {
 				id: itemData.id,
 				value: parsedValue,
-				isDeleted: itemData.isDeleted
+				isDeleted: itemData.isDeleted,
+				// Legacy snapshots predate right-origin metadata; default to null so
+				// they still integrate deterministically after loading.
+				originId: typeof itemData.originId === "string" ? itemData.originId : null,
+				rightOriginId: typeof itemData.rightOriginId === "string" ? itemData.rightOriginId : null,
 			};
 		});
 		let activeCount = 0;
@@ -477,6 +509,6 @@ function isString(val: unknown): val is string {
 	return typeof val === "string";
 }
 
-function isSnapshotItem(val: unknown): val is { id: string; value: unknown; isDeleted: boolean } {
+function isSnapshotItem(val: unknown): val is { id: string; value: unknown; isDeleted: boolean; originId?: unknown; rightOriginId?: unknown } {
 	return isRecord(val) && typeof val.id === "string" && typeof val.isDeleted === "boolean";
 }
