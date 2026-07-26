@@ -4,12 +4,14 @@
   "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "dev": "pnpm run build:server && pnpm run build:rich && pnpm run build:index && pnpm run build:text-db && node dist/server.js",
+    "dev": "pnpm run build:server && pnpm run build:rich && pnpm run build:index && pnpm run build:text-db && pnpm run build:json && node dist/server.js",
     "build:server": "esbuild server/server.ts --bundle --platform=node --outfile=dist/server.js --format=esm --external:drizzle-orm --external:@libsql/client --external:hono --external:@hono/node-server --external:@hono/node-ws --external:@ddgll/ts-crdt",
     "build:rich": "esbuild interactive-test/rich.ts --bundle --outfile=interactive-test/rich.js --format=esm",
     "build:index": "esbuild interactive-test/main.ts --bundle --outfile=interactive-test/main.js --format=esm",
     "build:text-db": "esbuild interactive-test/text-db.ts --bundle --outfile=interactive-test/text-db.js --format=esm",
+    "build:json": "esbuild interactive-test/json.ts --bundle --outfile=interactive-test/json.js --format=esm",
     "type-check": "tsc --noEmit",
+    "test": "vitest --run",
     "e2e": "playwright test --config=./e2e/playwright.config.ts"
   },
   "dependencies": {

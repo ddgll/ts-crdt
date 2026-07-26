@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CRDT JSON Document Demo</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --border: #d4d4d8;
+        --muted: #6b7280;
+        --bg-soft: #f7f7f8;
+        --accent: #2563eb;
+      }
+      * { box-sizing: border-box; }
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 1.5rem 2rem 3rem;
+        color: #18181b;
+      }
+      h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
+      h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+      .nav-links { display: flex; gap: 1.25rem; margin: 0.5rem 0 1rem; font-size: 0.9rem; }
+      .lede { color: var(--muted); max-width: 70ch; margin: 0 0 1rem; font-size: 0.9rem; }
+
+      .statusbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1.25rem;
+        padding: 0.6rem 0.9rem;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-size: 0.85rem;
+        margin-bottom: 1rem;
+      }
+      .statusbar span strong { font-variant-numeric: tabular-nums; }
+      #status[data-state="ready"] { color: #15803d; font-weight: 600; }
+      #status[data-state="disconnected"], #status[data-state="error"] { color: #b91c1c; font-weight: 600; }
+
+      .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+      button {
+        padding: 0.4rem 0.8rem;
+        border: 1px solid var(--border);
+        background: #fff;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 0.85rem;
+      }
+      button:hover { border-color: var(--accent); color: var(--accent); }
+
+      .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; align-items: start; }
+      @media (max-width: 900px) { .panes { grid-template-columns: 1fr; } }
+
+      textarea, input, select {
+        font-family: inherit;
+        font-size: 0.85rem;
+        padding: 0.35rem 0.5rem;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        width: 100%;
+      }
+      #json-input, #json-view {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.78rem;
+        height: 340px;
+        overflow: auto;
+      }
+      #json-view {
+        margin: 0;
+        padding: 0.5rem;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      #parse-error { min-height: 1.2rem; font-size: 0.8rem; margin-top: 0.35rem; }
+      #parse-error[data-state="error"] { color: #b91c1c; }
+
+      .fields { display: grid; gap: 0.6rem; margin-bottom: 1.25rem; }
+      label { display: block; font-size: 0.78rem; color: var(--muted); }
+      label.inline { display: flex; align-items: center; gap: 0.4rem; }
+      label.inline input { width: auto; }
+
+      #records { display: grid; gap: 0.75rem; max-height: 60vh; overflow-y: auto; padding-right: 0.25rem; }
+      .record {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.6rem 0.75rem;
+        display: grid;
+        gap: 0.45rem;
+        background: #fff;
+      }
+      .record-head { display: flex; justify-content: space-between; align-items: center; }
+      .record-id { font-size: 0.75rem; color: var(--muted); }
+      .record-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 0.5rem; align-items: end; }
+      .record button { padding: 0.1rem 0.4rem; line-height: 1; }
+    </style>
+  </head>
+  <body>
+    <h1>Collaborative JSON Document</h1>
+    <nav class="nav-links">
+      <a href="/index.html">Textarea Demo</a>
+      <a href="/rich.html">Rich Text Demo</a>
+      <a href="/text-db.html">Text-DB Demo</a>
+      <span><strong>JSON Demo (active)</strong></span>
+    </nav>
+    <p class="lede">
+      One JSON document backed by nested <code>YMap</code> / <code>YArray</code> /
+      <code>YText</code>. Open this page in two windows on the same
+      <code>?room=</code> and edit different fields at the same time — every field
+      merges independently, including character-level edits inside a single string.
+    </p>
+
+    <div class="statusbar">
+      <span>Connection: <span id="status" data-state="connecting">connecting</span></span>
+      <span>Replica: <strong id="replica-id">–</strong></span>
+      <span>Records: <strong id="record-count">0</strong></span>
+      <span>Ops sent: <strong id="op-count">0</strong></span>
+      <span>Doc bytes: <strong id="doc-size">0</strong></span>
+    </div>
+
+    <div class="toolbar">
+      <button type="button" id="seed-small">Seed 5 records</button>
+      <button type="button" id="seed-big">Seed 200 records</button>
+      <button type="button" id="add-record">Add record</button>
+      <button type="button" id="apply">Apply JSON</button>
+      <button type="button" id="reload">Reload editor from document</button>
+    </div>
+
+    <div class="panes">
+      <section>
+        <h2>Edit as raw JSON</h2>
+        <textarea id="json-input" spellcheck="false"></textarea>
+        <div id="parse-error" data-state="ok"></div>
+
+        <h2 style="margin-top: 1.25rem">Document fields</h2>
+        <div class="fields">
+          <label>Title <input type="text" id="doc-title" /></label>
+          <label>Notes (meta.notes) <textarea id="doc-notes" rows="2"></textarea></label>
+        </div>
+
+        <h2>Records</h2>
+        <div id="records"></div>
+      </section>
+
+      <section>
+        <h2>Live merged document</h2>
+        <pre id="json-view"></pre>
+      </section>
+    </div>
+
+    <script type="module" src="json.js"></script>
+  </body>
+</html>
